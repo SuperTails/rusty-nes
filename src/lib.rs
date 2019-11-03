@@ -1,5 +1,8 @@
 #![feature(bool_to_option)]
 
+// TODO: Figure out why I still need
+#![allow(unused_parens)]
+
 extern crate arrayvec;
 extern crate sdl2;
 
@@ -7,21 +10,22 @@ pub mod rom;
 pub mod ppu;
 pub mod apu;
 pub mod controller;
+pub mod mapper;
 
 use rom::Rom;
 use ppu::PPU;
 use apu::APU;
+use mapper::MappedLocation;
 use controller::Controller;
 use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::num::Wrapping;
-use sdl2::pixels::Color;
 use sdl2::keyboard::Keycode;
 use sdl2::event::Event;
 use sdl2::{Sdl, VideoSubsystem, EventPump};
 use sdl2::render::WindowCanvas;
-use sdl2::rect::Point;
+use mapper::{Mapped, Mapper0};
 
 /* 
  * Mapping 0:
@@ -51,24 +55,32 @@ pub struct Context {
 	pub y: u8,
 	pub sp: u8,
     pub native_ram: [u8; 0x800],
-    pub cart_ram: [u8; 0x1000],
-    pub prg_rom: Vec<u8>,
-    pub chr_rom: Vec<u8>,
     pub state: State,
-    pub ppu: Option<RefCell<PPU>>,
+    pub ppu: RefCell<PPU>,
     pub apu: RefCell<APU>,
     pub controller: RefCell<Controller>,
     pub sdl_system: SDLSystem,
+    pub mapper: Box<RefCell<dyn Mapped>>,
 }
 
 impl From<Rom> for Context {
     fn from(rom: Rom) -> Context {
-        let ppu = Some(RefCell::new(PPU::new(rom.chr_rom.clone())));
+        let mapper = Mapper0::new(rom.prg_rom, rom.chr_rom);
+        let ppu = RefCell::new(PPU::new());
         Context { 
-            prg_rom: rom.prg_rom,
-            chr_rom: rom.chr_rom,
             ppu,
-            ..Context::new()
+            mapper: Box::new(RefCell::new(mapper)),
+			status: 0,
+			pc: 0xFFFC,
+			acc: 0,
+			x: 0,
+			y: 0,
+			sp: 0,
+            native_ram: [0; 0x800],
+            state: State::Reset,
+            apu: RefCell::new(APU::new()),
+            controller: RefCell::new(Controller::new()),
+            sdl_system: SDLSystem::new(),
         }
     }
 }
@@ -80,12 +92,25 @@ enum MemLocation<T> {
     Ppu(u8),
     Apu(u8),
     Controller(u8),
+    Mapped(MappedLocation<T>),
+}
+
+impl<'a, T> From<MemLocation<&'a mut T>> for MemLocation<&'a T> {
+    fn from(mem: MemLocation<&'a mut T>) -> MemLocation<&'a T> {
+        match mem {
+            MemLocation::Ram(t) => MemLocation::Ram(&(*t)),
+            MemLocation::Rom(t) => MemLocation::Rom(&(*t)),
+            MemLocation::Ppu(t) => MemLocation::Ppu(t),
+            MemLocation::Apu(t) => MemLocation::Apu(t),
+            MemLocation::Controller(t) => MemLocation::Controller(t),
+            MemLocation::Mapped(t) => MemLocation::Mapped(t.into()),
+        }
+    }
 }
 
 // TODO: See if there is a better way to do this
 macro_rules! get_mem {
-    ($addr:ident, $ctx:ident, $($ref_t:tt)+) => ({
-        let prg_rom_len = $ctx.prg_rom.len();
+    ($addr:ident, $mapper:ident, $ctx:ident, $($ref_t:tt)+) => ({
         match $addr {
             0x0000..=0x1FFF => MemLocation::Ram($($ref_t)+ $ctx.native_ram[($addr % 0x0800) as usize]),
             0x2000..=0x3FFF => MemLocation::Ppu((($addr - 0x2000) % 0x8) as u8),
@@ -95,9 +120,7 @@ macro_rules! get_mem {
             0x4016..=0x4016 => MemLocation::Controller(0),
             0x4017..=0x4017 => MemLocation::Apu(17),
             0x4018..=0x401F => unimplemented!("Access to normally disabled APU or IO register at {:#04X}", $addr),
-            0x4020..=0x5FFF => unreachable!("Access to unmapped (?) memory at {:#04X}", $addr),
-            0x6000..=0x7FFF => MemLocation::Ram($($ref_t)+ $ctx.cart_ram[(($addr - 0x6000) % 0x1000) as usize]),
-            0x8000..=0xFFFF => MemLocation::Rom($($ref_t)+ $ctx.prg_rom[($addr - 0x8000) as usize % prg_rom_len]),
+            0x4020..=0xFFFF => MemLocation::Mapped($mapper.mem_cpu($addr).into()),
         }
     });
 }
@@ -131,26 +154,6 @@ impl SDLSystem {
 
 
 impl Context {
-	pub fn new() -> Context {
-		Context {
-			status: 0,
-			pc: 0xFFFC,
-			acc: 0,
-			x: 0,
-			y: 0,
-			sp: 0,
-            native_ram: [0; 0x800],
-            cart_ram: [0; 0x1000],
-            prg_rom: [0; 0x8000].to_vec(),
-            chr_rom: [0; 0x2000].to_vec(),
-            state: State::Reset,
-            ppu: None,
-            apu: RefCell::new(APU::new()),
-            controller: RefCell::new(Controller::new()),
-            sdl_system: SDLSystem::new(),
-		}
-	}
-
     pub fn push(&mut self, value: u8) {
         self.write(0x0100 + self.sp as u16, value);
         self.sp = (Wrapping(self.sp) - Wrapping(1)).0;
@@ -162,24 +165,32 @@ impl Context {
         res
     }
 
-    pub fn read(&self, addr: u16) -> u8 {
-        match get_mem!(addr, self, &) {
+    pub fn read_m(&self, addr: u16, mapper: &mut dyn Mapped) -> u8 {
+        match get_mem!(addr, mapper, self, &) {
             MemLocation::Rom(val) => *val,
             MemLocation::Ram(val) => *val,
-            MemLocation::Ppu(reg) => self.ppu.as_ref().unwrap().borrow_mut().read(reg),
+            MemLocation::Ppu(reg) => self.ppu.borrow_mut().read(reg, &mut *mapper),
             MemLocation::Apu(reg) => self.apu.borrow_mut().read(reg),
             MemLocation::Controller(reg) => self.controller.borrow_mut().read(reg),
+            MemLocation::Mapped(_) => mapper.read_cpu(addr),
         }
     }
 
+    pub fn read(&self, addr: u16) -> u8 {
+        let mut mapper = self.mapper.borrow_mut();
+        self.read_m(addr, &mut *mapper)
+    }
+
     pub fn write(&mut self, addr: u16, value: u8) {
-        let location = get_mem!(addr, self, &mut);
+        let mut mapper = self.mapper.borrow_mut();
+        let location = get_mem!(addr, mapper, self, &mut);
         match location {
             MemLocation::Rom(val) => panic!("Attempt to write to ROM at {:#06?}", addr),
             MemLocation::Ram(val) => *val = value,
-            MemLocation::Ppu(reg) => self.ppu.as_ref().unwrap().borrow_mut().write(reg, value, self),
+            MemLocation::Ppu(reg) => self.ppu.borrow_mut().write(reg, value, self, &mut *mapper),
             MemLocation::Apu(reg) => self.apu.borrow_mut().write(reg, value),
             MemLocation::Controller(reg) => self.controller.borrow_mut().write(reg, value),
+            MemLocation::Mapped(_) => mapper.write_cpu(addr, value),
         }
     }
 
@@ -273,10 +284,10 @@ impl Context {
 
         let nmi = {
             // TODO: VBLANK PROPERLY!
-            let mut ppu = self.ppu.as_ref().unwrap().borrow_mut();
+            let mut ppu = self.ppu.borrow_mut();
             let nmi_enabled = ppu.ctrl >> 7 != 0;
             /* TODO: We shouldn't be reading from this, right?? */
-            nmi_enabled && ppu.read(2) >> 7 != 0
+            nmi_enabled && ppu.read(2, &mut *self.mapper.borrow_mut()) >> 7 != 0
         };
 
         if nmi {
@@ -301,7 +312,7 @@ impl Context {
         }
 
         /* TODO: Actually count the number of cycles properly */
-        self.ppu.as_ref().unwrap().borrow_mut().next(3, &mut self.sdl_system);
+        self.ppu.borrow_mut().next(3, &mut self.sdl_system, &mut (*self.mapper.borrow_mut()));
     }
 
     fn print_instr(&self, instr: &Instruction) {
@@ -381,7 +392,13 @@ macro_rules! inst {
 		raw_inst!($v $name $val 2 $(|ctx: &mut crate::Context| { let addr = ctx.read_wide((Wrapping(ctx.read(ctx.pc + 1)) + Wrapping(ctx.x)).0 as u16); ($exc)(ctx, addr) })?)
     );
     ($v:ident $name:ident $val:tt ind,Y $($exc:expr)?) => (
-		raw_inst!($v $name $val 2 $(|ctx: &mut crate::Context| { let addr = (Wrapping(ctx.read_wide(ctx.read(ctx.pc + 1) as u16)) + Wrapping(ctx.y as u16)).0; ($exc)(ctx, addr) })?)
+		raw_inst!($v $name $val 2 $(|ctx: &mut crate::Context| {
+                let zpg_addr = ctx.read(ctx.pc + 1);
+                let mut effective_addr = Wrapping(ctx.read_wide(zpg_addr as u16));
+                effective_addr += Wrapping(ctx.y as u16);
+                ($exc)(ctx, effective_addr.0)
+            })?
+        )
     );
     ($v:ident $name:ident $val:tt rel $($exc:expr)?) => (
 		raw_inst!($v $name $val 2 $(|ctx: &mut crate::Context| { let offset = ctx.read(ctx.pc + 1); ($exc)(ctx, offset) })?)

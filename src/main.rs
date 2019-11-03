@@ -6,7 +6,7 @@ use nes::Context;
 use std::path::Path;
 
 fn main() {
-    let rom = Rom::new(Path::new("./TLoZ.nes")).unwrap_or_else(|err| {
+    let rom = Rom::new(Path::new("./SMB.nes")).unwrap_or_else(|err| {
         println!("Error loading ROM: {}", err);
         std::process::exit(1);
     });
