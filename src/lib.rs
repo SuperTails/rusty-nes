@@ -3,6 +3,9 @@
 // TODO: Figure out why I still need
 #![allow(unused_parens)]
 
+#[macro_use]
+extern crate num_derive;
+
 extern crate arrayvec;
 extern crate sdl2;
 
@@ -25,7 +28,7 @@ use sdl2::keyboard::Keycode;
 use sdl2::event::Event;
 use sdl2::{Sdl, VideoSubsystem, EventPump};
 use sdl2::render::WindowCanvas;
-use mapper::{Mapped, Mapper0};
+use mapper::{Mapped, Mapper0, Mapper1};
 
 /* 
  * Mapping 0:
@@ -61,15 +64,28 @@ pub struct Context {
     pub controller: RefCell<Controller>,
     pub sdl_system: SDLSystem,
     pub mapper: Box<RefCell<dyn Mapped>>,
+    pub hit_breakpoint: bool,
 }
 
 impl From<Rom> for Context {
     fn from(rom: Rom) -> Context {
-        let mapper = Mapper0::new(rom.prg_rom, rom.chr_rom);
+        let mapper: Box<RefCell<dyn Mapped>> = 
+        if rom.mapper == 0 {
+            Box::new(RefCell::new(Mapper0::new(rom.prg_rom, rom.chr_rom)))
+        }
+        else if rom.mapper == 1 {
+            /*Box::new(RefCell::new(Mapper1::new(rom.prg_rom, rom.chr_rom)))*/
+            Box::new(RefCell::new(Mapper1::new(rom.prg_rom, [0; 0x2000].to_vec())))
+        }
+        else {
+            panic!()
+        };
+
         let ppu = RefCell::new(PPU::new());
         Context { 
             ppu,
-            mapper: Box::new(RefCell::new(mapper)),
+            hit_breakpoint: false,
+            mapper,
 			status: 0,
 			pc: 0xFFFC,
 			acc: 0,
@@ -269,6 +285,8 @@ impl Context {
     pub fn next(&mut self, instrs: &Arch) {
         let mut key_events = Vec::new();
 
+        let mut should_run = false;
+
         for event in self.sdl_system.event_pump.poll_iter() {
             key_events.push(event.clone());
             match event {
@@ -276,43 +294,47 @@ impl Context {
                 Event::KeyDown { keycode: Some(Keycode::Escape), .. } => {
                     std::process::exit(0);
                 },
+                Event::KeyDown { keycode: Some(Keycode::C), .. } => {
+                    self.hit_breakpoint = false;
+                }
+                Event::KeyDown { keycode: Some(Keycode::Space), .. } => {
+                    should_run = true;
+                }
                 _ => {},
             }
         }
 
         self.controller.borrow_mut().update_from_keys(&key_events);
 
-        let nmi = {
-            // TODO: VBLANK PROPERLY!
-            let mut ppu = self.ppu.borrow_mut();
-            let nmi_enabled = ppu.ctrl >> 7 != 0;
-            /* TODO: We shouldn't be reading from this, right?? */
-            nmi_enabled && ppu.read(2, &mut *self.mapper.borrow_mut()) >> 7 != 0
-        };
+        if !self.hit_breakpoint || should_run { 
+            match self.state {
+                State::Reset => {
+                    self.pc = (self.read(self.pc + 1) as u16) << 8 | self.read(self.pc) as u16;
+                    println!("Reset vector was {:#06X}", self.pc);
+                    self.state = State::Run;
+                },
+                State::Irq => {
+                    unimplemented!("IRQ not implemented");
+                },
+                State::Nmi |
+                State::Run => {
+                    let id = self.read(self.pc);
+                    let instr = instrs.get(&id).unwrap_or_else(|| {self.print_stack(); panic!("Instruction {:#04X} does not exist", id) });
+                    
+                    // A starts as 0x0F
+                    // writes to mmc at $8000, then shifts right
+                    //self.print_instr(instr);
+                    instr.run(self);
+                },
+            }
 
-        if nmi {
-            self.trigger_nmi();
+            /* TODO: Actually count the number of cycles properly */
+            self.ppu.borrow_mut().next(3, &mut self.sdl_system, &mut (*self.mapper.borrow_mut()));
+
+            if self.ppu.borrow_mut().nmi_falling() {
+                self.trigger_nmi();
+            }
         }
-
-        match self.state {
-            State::Reset => {
-                self.pc = (self.read(self.pc + 1) as u16) << 8 | self.read(self.pc) as u16;
-                self.state = State::Run;
-            },
-            State::Irq => {
-                unimplemented!("IRQ not implemented");
-            },
-            State::Nmi |
-            State::Run => {
-                let id = self.read(self.pc);
-                let instr = instrs.get(&id).unwrap_or_else(|| {self.print_stack(); panic!("Instruction {:#04X} does not exist", id) });
-                //self.print_instr(instr);
-                instr.run(self);
-            },
-        }
-
-        /* TODO: Actually count the number of cycles properly */
-        self.ppu.borrow_mut().next(3, &mut self.sdl_system, &mut (*self.mapper.borrow_mut()));
     }
 
     fn print_instr(&self, instr: &Instruction) {
@@ -350,7 +372,7 @@ macro_rules! raw_inst {
 		assert!($v.insert(
             $val,
             crate::Instruction {
-                opcode: format!("{} ({:#04X})", stringify!($name), $val),
+                opcode: stringify!($name).to_string(),
                 length: $len,
                 code: ::std::boxed::Box::new($exc),
             }
@@ -360,7 +382,7 @@ macro_rules! raw_inst {
         assert!($v.insert(
                 $val,
                 crate::Instruction {
-                    opcode: format!("{} ({:#04X})", stringify!($name), $val),
+                    opcode: stringify!($name).to_string(),
                     length: $len, 
                     code: ::std::boxed::Box::new(|_| unimplemented!("Instruction {} ({:#X}) not implemented", stringify!($name), $val))
                 }
@@ -568,6 +590,8 @@ const RRA: &'static dyn Fn(&mut Context, u16) = &|ctx: &mut Context, addr: u16| 
     ADD(ctx, result);
 };
 
+const NOP: &'static dyn Fn(&mut Context) = &|_: &mut Context| {};
+
 inst_list! {
     { BRK 0x00 }
     { BPL 0x10 rel (|ctx: &mut crate::Context, offset: u8| BRANCH(ctx, offset, !ctx.get_neg())) }
@@ -672,21 +696,21 @@ inst_list! {
     { SBC 0xE9 imm (|ctx: &mut crate::Context, imm: u8| { SUB(ctx, imm); }) }
     { SBC 0xF9 abs,Y (|ctx: &mut crate::Context, addr: u16| { SUB(ctx, ctx.read(addr)); }) }
     { ASL 0x0A (|ctx: &mut crate::Context| { let c = ctx.acc >> 7; ctx.acc <<= 1; ctx.update_flags(ctx.acc); ctx.set_carry(c != 0); }) }
-    { NOP 0x1A (|ctx: &mut crate::Context| {}) }
+    { NOP 0x1A NOP }
     { ROL 0x2A (|ctx: &mut crate::Context| { ctx.acc = ROL(ctx, ctx.acc); }) }
-    { NOP 0x3A (|ctx: &mut crate::Context| {}) }
+    { NOP 0x3A NOP }
     { LSR 0x4A (|ctx: &mut crate::Context| { let carry = ctx.acc & 1 != 0; ctx.acc >>= 1; ctx.update_flags(ctx.acc); ctx.set_carry(carry) }) }
-    { NOP 0x5A (|ctx: &mut crate::Context| {}) }
+    { NOP 0x5A NOP }
     { ROR 0x6A (|ctx: &mut crate::Context| { ctx.acc = ROR(ctx, ctx.acc); }) }
-    { NOP 0x7A (|ctx: &mut crate::Context| {}) }
+    { NOP 0x7A NOP }
     { TXA 0x8A (|ctx: &mut crate::Context| { ctx.acc = ctx.x; ctx.update_flags(ctx.acc); }) }
     { TXS 0x9A (|ctx: &mut crate::Context| { ctx.sp = ctx.x }) }
     { TAX 0xAA (|ctx: &mut crate::Context| { ctx.x = ctx.acc; ctx.update_flags(ctx.x); }) }
     { TSX 0xBA (|ctx: &mut crate::Context| { ctx.x = ctx.sp; ctx.update_flags(ctx.x); }) }
     { DEX 0xCA (|ctx: &mut crate::Context| { ctx.x = (Wrapping(ctx.x) - Wrapping(1)).0; ctx.update_flags(ctx.x); }) }
-    { NOP 0xDA (|ctx: &mut crate::Context| {}) }
-    { NOP 0xEA (|ctx: &mut crate::Context| {}) }
-    { NOP 0xFA (|ctx: &mut crate::Context| {}) }
+    { NOP 0xDA NOP }
+    { NOP 0xEA NOP }
+    { NOP 0xFA NOP }
     { SLO 0x1B abs,Y SLO }
     { RLA 0x3B abs,Y RLA }
     { SRE 0x5B abs,Y SRE }

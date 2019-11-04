@@ -51,7 +51,10 @@ pub struct PPU {
     pub oam_addr: u8,
     pub oam: [OAMEntry; 64],
 
+    prev_nmi_state: bool,
+
     cycle: usize,
+
     scanline: usize,
     pixel: usize,
 
@@ -87,6 +90,7 @@ macro_rules! get_mem {
 impl PPU {
     pub fn new() -> PPU {
         PPU {
+            prev_nmi_state: false,
             ctrl: 0,
             scanline: 0,
             pixel: 0,
@@ -102,6 +106,19 @@ impl PPU {
             colors: PPU::get_colors(),
             oam: [OAMEntry::default(); 64],
         }
+    }
+
+    pub fn nmi_falling(&mut self) -> bool {
+        let nmi_enabled = self.ctrl & 0x80 != 0;
+        let nmi_occurred = self.status & 0x80 != 0;
+
+        let new_state = nmi_enabled && nmi_occurred;
+
+        let falling = new_state && !self.prev_nmi_state;
+
+        self.prev_nmi_state = new_state;
+
+        falling
     }
 
     /* 
@@ -143,7 +160,11 @@ impl PPU {
                         self.status |= 1 << 7;
                     }
                 },
-                /* 262 */ _ => { /* Pre-render scanline */ self.scanline = 0; },
+                /* 262 */ _ => { /* Pre-render scanline */
+                    self.scanline = 0;
+                    /* TODO: Check if this is the right time to clear nmi_occurred */
+                    self.status &= !0x80;
+                },
             }
         }
     }
@@ -425,6 +446,7 @@ impl PPU {
     }
 
     pub fn write(&mut self, reg: u8, value: u8, ctx: &crate::Context, mapper: &mut dyn Mapped) {
+        println!("Writing {} to reg {}", value, reg);
         match reg {
             0 => self.ctrl = value,
             1 => self.mask = value,
