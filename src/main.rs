@@ -2,15 +2,23 @@ extern crate nes;
 
 use nes::rom::Rom;
 use nes::instruction::instructions;
+use nes::Config;
 use nes::Context;
 use std::path::Path;
 
 const VERIFY: bool = false;
 
 fn main() {
-    let rom = Rom::new(Path::new("./nestest.nes")).unwrap_or_else(|err| {
+    let args: Vec<String> = std::env::args().collect();
+
+    let config = Config::from_args(&args).unwrap_or_else(|err| {
+        println!("Error parsing arguments: {:?}", err);
+        std::process::exit(1)
+    });
+
+    let rom = Rom::new(&config.rom_path).unwrap_or_else(|err| {
         println!("Error loading ROM: {}", err);
-        std::process::exit(1);
+        std::process::exit(1)
     });
 
     println!("ROM has mapper {} and submapper {}", rom.mapper, rom.submapper);

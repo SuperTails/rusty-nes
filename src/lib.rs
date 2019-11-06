@@ -32,6 +32,7 @@ use sdl2::event::Event;
 use sdl2::{Sdl, VideoSubsystem, EventPump};
 use sdl2::render::WindowCanvas;
 use mapper::{Mapped, Mapper0, Mapper1, Mapper3};
+use std::path::PathBuf;
 
 /* 
  * Mapping 0:
@@ -43,6 +44,27 @@ use mapper::{Mapped, Mapper0, Mapper1, Mapper3};
  * CHR CAP -  8KiB
  *
  */
+
+#[derive(Debug, Clone)]
+pub struct Config {
+    pub rom_path: PathBuf,
+}
+
+#[derive(Debug, Clone)]
+pub struct ConfigParseError {
+    error: String,
+}
+
+impl Config {
+    pub fn from_args(args: &[String]) -> Result<Config, ConfigParseError> {
+        if args.len() == 2 {
+            Ok(Config { rom_path: args[1].clone().into() })
+        }
+        else {
+            Err(ConfigParseError { error: "Wrong number of arguments provided".to_string() })
+        }
+    }
+}
 
 type Arch = [Option<Instruction>; 256];
 
