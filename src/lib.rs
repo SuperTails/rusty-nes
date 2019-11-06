@@ -9,6 +9,9 @@ extern crate num_derive;
 #[macro_use]
 extern crate bitfield;
 
+#[macro_use]
+extern crate lazy_static;
+
 extern crate arrayvec;
 extern crate sdl2;
 
@@ -65,8 +68,6 @@ impl Config {
         }
     }
 }
-
-type Arch = [Option<Instruction>; 256];
 
 pub enum State {
     Reset,
@@ -330,7 +331,7 @@ impl Context {
         true
 	}
 
-    pub fn next(&mut self, instrs: &Arch) {
+    pub fn next(&mut self) {
         let mut key_events = Vec::new();
 
         let mut should_run = false;
@@ -367,7 +368,7 @@ impl Context {
                 State::Nmi |
                 State::Run => {
                     let id = self.read(self.pc);
-                    let instr = instrs[id as usize].as_ref().unwrap_or_else(|| {self.print_stack(); panic!("Instruction {:#04X} does not exist", id) });
+                    let instr = instruction::ARCH[id as usize].as_ref().unwrap_or_else(|| {self.print_stack(); panic!("Instruction {:#04X} does not exist", id) });
 
                     // TODO: Fix this
                     if id == 0x00 && self.try_irq() {

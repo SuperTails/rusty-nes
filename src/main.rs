@@ -26,8 +26,6 @@ fn main() {
 
     let mut ctx = Context::from(rom);
 
-    let arch = instructions::gen_excs();
-
     if VERIFY {
         ctx.pc = 0xC000;
         ctx.sp = 0xFD;
@@ -40,13 +38,13 @@ fn main() {
             /* Program Counter, Acc, X, Y, Status, Stack Pointer */
             let actual = (ctx.pc, ctx.acc, ctx.x, ctx.y, ctx.status, ctx.sp, ctx.cycle);
             assert_eq!(expected[i], actual);
-            ctx.next(&arch);
+            ctx.next();
         }
 
     }
     else {
         loop {
-            ctx.next(&arch);
+            ctx.next();
         }
     }
 }

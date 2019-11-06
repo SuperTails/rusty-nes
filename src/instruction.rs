@@ -3,6 +3,10 @@ use std::num::Wrapping;
 use crate::Context;
 use std::str::FromStr;
 
+lazy_static! {
+    pub static ref ARCH: [Option<Instruction>; 256] = instructions::gen_excs();
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AddressingMode {
     Impl,
@@ -108,9 +112,9 @@ impl FromStr for AddressingMode {
 }
 
 enum Operation {
-    Addressed(&'static dyn Fn(&mut Context, u16)),
-    Immediate(&'static dyn Fn(&mut Context, u8)),
-    Implied(&'static dyn Fn(&mut Context)),
+    Addressed(&'static (dyn Fn(&mut Context, u16) + Sync)),
+    Immediate(&'static (dyn Fn(&mut Context, u8) + Sync)),
+    Implied(&'static (dyn Fn(&mut Context) + Sync)),
 }
 
 impl Operation {
@@ -272,7 +276,7 @@ macro_rules! inst_list {
         =>
         (pub mod instructions {
             use super::*;
-			pub fn gen_excs() -> crate::Arch {
+			pub fn gen_excs() -> [Option<Instruction>; 256] {
 				let mut excs = std::collections::HashMap::new();
 				$(
 					inst!(excs $($in)+);
