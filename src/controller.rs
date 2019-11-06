@@ -61,7 +61,6 @@ impl Controller {
         match reg {
             0 => {
                 self.strobe = (value & 1) != 0;
-                println!("Strobe is now {}", self.strobe);
                 if self.strobe {
                     self.shift = self.state;
                 }

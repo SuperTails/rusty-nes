@@ -33,7 +33,7 @@ pub trait Mapped {
     fn write_cpu(&mut self, addr: u16, value: u8) {
         match self.mem_cpu(addr) {
             MappedLocation::Ram(b) => *b = value,
-            MappedLocation::Rom(b) => panic!("CPU Write to cart ROM at {:#06X}", addr),
+            MappedLocation::Rom(_) => panic!("CPU Write to cart ROM at {:#06X}", addr),
             _ => panic!(),
         }
     }
@@ -42,6 +42,7 @@ pub trait Mapped {
 
     fn read_ppu(&mut self, addr: u16) -> u8 {
         match self.mem_ppu(addr) {
+            MappedLocation::Ram(b) => *b,
             MappedLocation::Rom(b) => *b,
             _ => panic!(),
         }
@@ -49,11 +50,13 @@ pub trait Mapped {
 
     fn write_ppu(&mut self, addr: u16, value: u8) {
         match self.mem_ppu(addr) {
-            /*MappedLocation::Rom(b) => panic!("PPU write to cart ROM at {:#06X}", addr),*/
+            MappedLocation::Ram(b) => { *b = value; },
             MappedLocation::Rom(b) => { *b = value; println!("Writing to CHR ROM??") },
             _ => panic!(),
         }
     }
+
+    fn is_vert_mirrored(&self) -> bool;
 }
 
 /* 
@@ -103,6 +106,11 @@ impl Mapped for Mapper0 {
             _ => panic!("PPU access to memory not in cart at {:#06X}", addr),
         }
     }
+
+    // TODO: Figure this out
+    fn is_vert_mirrored(&self) -> bool {
+        true
+    }
 }
 
 /*
@@ -122,24 +130,24 @@ impl Mapped for Mapper0 {
  *
  */
 
-#[derive(FromPrimitive, Debug, Clone, Copy)]
+#[derive(FromPrimitive, Debug, Clone, Copy, PartialEq, Eq)]
 enum MirrorMode {
-    OneScreenLowerBank,
+    OneScreenLowerBank = 0,
     OneScreenUpperBank,
     Vertical,
     Horizontal,
 }
 
-#[derive(FromPrimitive, Debug, Clone, Copy)]
+#[derive(FromPrimitive, Debug, Clone, Copy, PartialEq, Eq)]
 enum PrgRomMode {
     DoubleSize = 1,
     FixFirst,
     FixLast
 }
 
-#[derive(FromPrimitive, Debug, Clone, Copy)]
+#[derive(FromPrimitive, Debug, Clone, Copy, PartialEq, Eq)]
 enum ChrMode {
-    DoubleSize,
+    DoubleSize = 0,
     Individual
 }
 
@@ -165,7 +173,7 @@ pub struct Mapper1 {
 }
 
 impl Mapper1 {
-    pub fn new(mut prg_rom: Vec<u8>, chr_rom: Vec<u8>) -> Mapper1 {
+    pub fn new(prg_rom: Vec<u8>, chr_rom: Vec<u8>) -> Mapper1 {
         assert!(prg_rom.len() == 0x20000 || prg_rom.len() == 0x40000);
         assert_eq!(chr_rom.len(), 0x2000);
 
@@ -188,6 +196,10 @@ impl Mapper1 {
 impl Mapped for Mapper1 {
     fn mem_cpu(&mut self, addr: u16) -> MappedLocation<&mut u8> {
         match addr {
+            0x4020..=0x5FFF => {
+                println!("Returning wrapped from unmapped address {:#06X}", addr);
+                self.mem_cpu(addr + 0x2000)
+            },
             0x6000..=0x7FFF => {
                 if self.prg_bank & (1 << 4) != 0 {
                     panic!("RAM is disabled")
@@ -258,7 +270,7 @@ impl Mapped for Mapper1 {
             MappedLocation::Ram(t) => *t = value,
             MappedLocation::Mmio(_) => {
                 if value & 0x80 != 0 {
-                    // Clear shift register
+					// TODO: Does this affect the prg_bank register?
                     self.shifter = 0;
                     self.shift_count = 0;
                 }
@@ -273,6 +285,9 @@ impl Mapped for Mapper1 {
                         let register = (addr >> 13) & 0b11;
 
                         println!("Writing {:#b} to mapper register {}", self.shifter, register);
+						if register != 0 {
+							println!("... with modes {:?}, {:?}, {:?}", self.mirror_mode, self.prg_rom_mode, self.chr_mode);
+						}
 
                         // Register is bits 14 and 13 of the address
                         match register {
@@ -281,7 +296,7 @@ impl Mapped for Mapper1 {
                                 if prg_rom_mode == 0 { prg_rom_mode = 1 }
 
                                 self.mirror_mode = MirrorMode::from_u8(self.shifter & 0b11).unwrap();
-                                self.prg_rom_mode = PrgRomMode::from_u8((self.shifter >> 2) & 0b11).unwrap();
+                                self.prg_rom_mode = PrgRomMode::from_u8(prg_rom_mode).unwrap();
                                 self.chr_mode = ChrMode::from_u8((self.shifter >> 4) & 0b1).unwrap();
 
                                 println!("Modes are now: {:?}, {:?}, {:?}", self.mirror_mode, self.prg_rom_mode, self.chr_mode);
@@ -292,7 +307,6 @@ impl Mapped for Mapper1 {
                             _ => unreachable!(),
                         }
 
-                        // TODO: Does this affect the prg_bank register?
                         self.shift_count = 0;
                         self.shifter = 0;
                     }
@@ -347,8 +361,6 @@ impl Mapped for Mapper1 {
             panic!();
         }
 
-        println!("Writing to PPU rom...?");
-
         match self.chr_mode {
             ChrMode::Individual => {
                 let bank_select = 
@@ -376,4 +388,67 @@ impl Mapped for Mapper1 {
         }
     }
 
+    // TODO: The one-screen modes
+    fn is_vert_mirrored(&self) -> bool {
+        self.mirror_mode == MirrorMode::Vertical
+    }
+}
+
+pub struct Mapper3 {
+    prg_rom: Vec<u8>, // 16KiB or 32KiB, not bankswitched
+    chr: Vec<u8>, // Up to 2048KiB, bank size 8KiB
+    bank_select: u8,
+}
+
+impl Mapper3 {
+    pub fn new(prg_rom: Vec<u8>, chr: Vec<u8>) -> Mapper3 {
+        assert!(chr.len() <= 0x200000);
+        assert_eq!(chr.len() % 0x2000, 0);
+        assert!(prg_rom.len() == 0x4000 || prg_rom.len() == 0x8000);
+
+        Mapper3 { prg_rom, chr, bank_select: 0 }
+    }
+}
+
+impl Mapped for Mapper3 {
+    fn mem_cpu(&mut self, addr: u16) -> MappedLocation<&mut u8> {
+        match addr {
+            0x8000..=0xFFFF => MappedLocation::Mmio(addr),
+            _ => panic!(),
+        }
+    }
+
+    fn read_cpu(&mut self, addr: u16) -> u8 {
+        match self.mem_cpu(addr) {
+            MappedLocation::Mmio(b) => self.prg_rom[(b - 0x8000) as usize],
+            _ => panic!(),
+        }
+    }
+
+    fn write_cpu(&mut self, addr: u16, value: u8) {
+        match self.mem_cpu(addr) {
+            MappedLocation::Mmio(_) => {
+                assert!(value <= 3);
+                self.bank_select = value;
+            },
+            _ => panic!(),
+        }
+    }
+
+    fn mem_ppu(&mut self, addr: u16) -> MappedLocation<&mut u8> {
+        match addr {
+            0x0000..=0x1FFF => {
+                let bank_start = self.bank_select as usize * 0x2000;
+                let bank_end = bank_start + 0x2000;
+                let bank = &mut self.chr[bank_start..bank_end];
+                MappedLocation::Ram(&mut bank[addr as usize])
+            },
+            _ => panic!(),
+        }
+    }
+
+    // TODO: Is it?
+    fn is_vert_mirrored(&self) -> bool {
+        true
+    }
 }

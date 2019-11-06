@@ -47,7 +47,7 @@ impl Rom {
         let mut result = Vec::with_capacity(size);
         result.resize(size, 0);
 
-        file.read_exact(&mut result).unwrap_or_else(|err| {
+        file.read_exact(&mut result).unwrap_or_else(|_err| {
             println!("Failed to fill buffer of size {}KiB", size / chunk_size);  
             std::process::exit(1);
         });
@@ -65,12 +65,13 @@ impl Rom {
             return Err(Box::new(RomReadError { error: format!("Incorrect file marker {:?}", &header[0..4]) }));
         }
 
+        // TODO: Use some of these 
         let mapper = (header[8] as u16 & 0x0F) << 8 | ((header[7] & 0xF0)| (header[6] >> 4)) as u16;
         let submapper = header[8] >> 4;
-        let fs_mode = (header[6] >> 3) & 1 != 0;
+        let _fs_mode = (header[6] >> 3) & 1 != 0;
         let trainer = (header[6] >> 2) & 1 != 0;
-        let battery = (header[6] >> 1) & 1 != 0;
-        let mirro_t = (header[6] >> 0) & 1 != 0;
+        let _battery = (header[6] >> 1) & 1 != 0;
+        let _mirro_t = (header[6] >> 0) & 1 != 0;
 
         if header[7] & 0b11 != 0b00 {
             return Err(Box::new(RomReadError { error: format!("Unsupported console {}", header[7] & 0x3) }));
@@ -82,19 +83,19 @@ impl Rom {
             return Err(Box::new(RomReadError { error: format!("Incorrect file version {}", (header[7] >> 2) & 0x3) }));
         }
 
-        let prg_ram_eeprom_size = header[10];
-        let chr_ram_size = header[11];
+        let _prg_ram_eeprom_size = header[10];
+        let _chr_ram_size = header[11];
 
-        let timing = header[12];
+        let _timing = header[12];
 
-        let misc_roms = header[14] & 0x03;
+        let _misc_roms = header[14] & 0x03;
 
-        let def_exp_device = header[15] & 0x3F;
+        let _def_exp_device = header[15] & 0x3F;
 
         let trainer = trainer.then_with(|| {
            let mut trainer_buf = [0; 512]; 
 
-           file.read_exact(&mut trainer_buf);
+           file.read_exact(&mut trainer_buf).unwrap();
 
            trainer_buf
         });
