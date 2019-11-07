@@ -3,9 +3,9 @@ use crate::mem_location::*;
 use std::cell::RefCell;
 
 pub trait Mapped {
-    fn mem_cpu<'a>(&'a self, addr: u16) -> Box<dyn MemLocation + 'a>;
+    fn mem_cpu<'a>(&'a mut self, addr: u16) -> Box<dyn MemLocation + 'a>;
 
-    fn mem_ppu<'a>(&'a self, addr: u16) -> Box<dyn MemLocation + 'a>;
+    fn mem_ppu<'a>(&'a mut self, addr: u16) -> Box<dyn MemLocation + 'a>;
 
     fn is_vert_mirrored(&self) -> bool;
 }
@@ -24,9 +24,9 @@ pub trait Mapped {
  *
  */
 pub struct Mapper0 {
-    prg_rom: Vec<u8>,
+    prg_rom: RefCell<Vec<u8>>,
     prg_ram: RefCell<Vec<u8>>,
-    chr_rom: Vec<u8>,
+    chr_rom: RefCell<Vec<u8>>,
 }
 
 impl Mapper0 {
@@ -36,49 +36,28 @@ impl Mapper0 {
 
         /* TODO: Figure out how much RAM to allocate */
         Mapper0 {
-            prg_rom,
+            prg_rom: RefCell::new(prg_rom),
             prg_ram: RefCell::new([0; 0x800].to_vec()),
-            chr_rom,
-        }
-    }
-}
-
-enum Mapper0Location<'a> {
-    Ram((&'a RefCell<Vec<u8>>, u16)),
-    Rom(&'a u8)
-}
-
-impl MemLocation for Mapper0Location<'_> {
-    fn read(&mut self) -> u8 {
-        match self {
-            Mapper0Location::Ram((data, addr)) => data.borrow()[*addr as usize],
-            Mapper0Location::Rom(t) => **t,
-        }
-    }
-
-    fn write(&mut self, value: u8) {
-        match self {
-            Mapper0Location::Ram((data, addr)) => data.borrow_mut()[*addr as usize] = value,
-            Mapper0Location::Rom(_) => println!("Attempted write to ROM"),
+            chr_rom: RefCell::new(chr_rom)
         }
     }
 }
 
 impl Mapped for Mapper0 {
-    fn mem_cpu<'a>(&'a self, addr: u16) -> Box<dyn MemLocation + 'a> {
-        let prg_ram_len = self.prg_ram.borrow().len();
+    fn mem_cpu<'a>(&'a mut self, addr: u16) -> Box<dyn MemLocation + 'a> {
+        let prg_ram_len = self.prg_ram.len();
         let prg_rom_len = self.prg_rom.len();
         match addr {
             0x4020..=0x5FFF => panic!("CPU Read from unmapped cart memory at {:#06X}", addr),
-            0x6000..=0x7FFF => Box::new(Mapper0Location::<'a>::Ram((&self.prg_ram, (addr - 0x6000)))),
-            0x8000..=0xFFFF => Box::new(Mapper0Location::<'a>::Rom(&self.prg_rom[(addr - 0x8000) as usize % prg_rom_len])),
+            0x6000..=0x7FFF => Box::new(RamLocation::<'a> { mem: &self.prg_ram, addr: (addr - 0x6000) }),
+            0x8000..=0xFFFF => Box::new(RamLocation::<'a> { mem: &self.prg_rom, addr: (addr - 0x8000) }),
             _ => panic!("CPU access to memory not in cart at {:#06X}", addr),
         }
     }
 
-    fn mem_ppu<'a>(&'a self, addr: u16) -> Box<dyn MemLocation + 'a> {
+    fn mem_ppu<'a>(&'a mut self, addr: u16) -> Box<dyn MemLocation + 'a> {
         match addr {
-            0x0000..=0x1FFF => Box::new(Mapper0Location::<'a>::Rom(&self.chr_rom[addr as usize])),
+            0x0000..=0x1FFF => Box::new(RamLocation::<'a> { mem: self.chr_rom[addr as usize], addr }),
             _ => panic!("PPU access to memory not in cart at {:#06X}", addr),
         }
     }
@@ -136,13 +115,9 @@ pub struct Mapper1 {
 
     chr_rom: RefCell<Vec<u8>>, // 8K (??)
 
-    data: RefCell<Mapper1Impl>
-}
-
-struct Mapper1Impl {
     shifter: u8,
     shift_count: u8,
-    
+
     mirror_mode: MirrorMode,
     prg_rom_mode: PrgRomMode,
     chr_mode: ChrMode,
@@ -161,23 +136,21 @@ impl Mapper1 {
             prg_ram: RefCell::new([0; 0x2000].to_vec()),
             prg_rom: RefCell::new(prg_rom),
             chr_rom: RefCell::new(chr_rom),
-            data: RefCell::new(Mapper1Impl {
-                mirror_mode: MirrorMode::OneScreenLowerBank,
-                prg_rom_mode: PrgRomMode::FixLast,
-                chr_mode: ChrMode::DoubleSize,
-                shifter: 0,
-                shift_count: 0,
-                chr_bank_0: 0,
-                chr_bank_1: 0,
-                prg_bank: 0,
-            }),
+            mirror_mode: MirrorMode::OneScreenLowerBank,
+            prg_rom_mode: PrgRomMode::FixLast,
+            chr_mode: ChrMode::DoubleSize,
+            shifter: 0,
+            shift_count: 0,
+            chr_bank_0: 0,
+            chr_bank_1: 0,
+            prg_bank: 0,
         }
     }
 }
 
 enum Mapper1Location<'a> {
-    Ram((&'a RefCell<Vec<u8>>, u16)),
-    Mmio((&'a Mapper1, u16))
+    Ram((RefCell<Vec<u8>>, u16)),
+    Mmio((&'a mut Mapper1, u16))
 }
 
 impl MemLocation for Mapper1Location<'_> {
@@ -185,13 +158,12 @@ impl MemLocation for Mapper1Location<'_> {
         match self {
             Mapper1Location::Ram((t, addr)) => t.borrow()[*addr as usize],
             Mapper1Location::Mmio((mapper, addr)) => {
-                let data = mapper.data.borrow();
                 let prg_rom = mapper.prg_rom.borrow();
                 // TODO: Use mirror mode
-                match data.prg_rom_mode {
+                match mapper.prg_rom_mode {
                     PrgRomMode::DoubleSize => {
                         // Switch 32KiB at $8000
-                        let bank_start = (0x8000 * ((data.prg_bank & 0b01110) >> 1) as usize) % mapper.prg_rom.borrow().len();
+                        let bank_start = (0x8000 * ((mapper.prg_bank & 0b01110) >> 1) as usize) % mapper.prg_rom.borrow().len();
                         let bank_end = bank_start + 0x8000;
                         let bank = &prg_rom[bank_start..bank_end];
                         bank[(*addr - 0x8000) as usize]
@@ -204,7 +176,8 @@ impl MemLocation for Mapper1Location<'_> {
                                 mapper.prg_rom.borrow()[(*addr - 0x8000) as usize]
                             },
                             _ => {
-                                let bank_start = (0x4000 * (data.prg_bank & 0b01111) as usize) % prg_rom.len();
+                                let bank_start = (0x4000 * (mapper.prg_bank & 0b01111) as usize) % prg_rom.len();
+                                let bank_end = bank_start + 0x4000;
                                 prg_rom[bank_start + *addr as usize - 0x8000]
                             }
                         }
@@ -218,7 +191,7 @@ impl MemLocation for Mapper1Location<'_> {
                                 bank[(*addr - 0xC000) as usize]
                             }
                             _ => {
-                                let bank_start = (0x4000 * (data.prg_bank & 0b01111) as usize) % prg_rom.len();
+                                let bank_start = (0x4000 * (mapper.prg_bank & 0b01111) as usize) % prg_rom.len();
                                 let bank_end = bank_start + 0x4000;
                                 let bank = &prg_rom[bank_start..bank_end];
                                 bank[(*addr - 0x8000) as usize]
@@ -234,47 +207,46 @@ impl MemLocation for Mapper1Location<'_> {
         match self {
             Mapper1Location::Ram((t, addr)) => t.borrow_mut()[*addr as usize] = value,
             Mapper1Location::Mmio((mapper, addr)) => {
-                let mut data = mapper.data.borrow_mut();
                 if value & 0x80 != 0 {
 					// TODO: Does this affect the prg_bank register?
-                    data.shifter = 0;
-                    data.shift_count = 0;
+                    mapper.shifter = 0;
+                    mapper.shift_count = 0;
                 }
                 else {
-                    data.shifter >>= 1;
-                    data.shifter |= (value & 1) << 4;
+                    mapper.shifter >>= 1;
+                    mapper.shifter |= (value & 1) << 4;
 
-                    data.shift_count += 1;
+                    mapper.shift_count += 1;
 
                     // TODO: Ignore consecutive writes?
-                    if data.shift_count == 5 {
+                    if mapper.shift_count == 5 {
                         let register = (*addr >> 13) & 0b11;
 
-                        println!("Writing {:#b} to mapper register {}", data.shifter, register);
+                        println!("Writing {:#b} to mapper register {}", mapper.shifter, register);
 						if register != 0 {
-							println!("... with modes {:?}, {:?}, {:?}", data.mirror_mode, data.prg_rom_mode, data.chr_mode);
+							println!("... with modes {:?}, {:?}, {:?}", mapper.mirror_mode, mapper.prg_rom_mode, mapper.chr_mode);
 						}
 
                         // Register is bits 14 and 13 of the address
                         match register {
                             0 => {
-                                let mut prg_rom_mode = (data.shifter >> 2 ) & 0b11;
+                                let mut prg_rom_mode = (mapper.shifter >> 2 ) & 0b11;
                                 if prg_rom_mode == 0 { prg_rom_mode = 1 }
 
-                                data.mirror_mode = MirrorMode::from_u8(data.shifter & 0b11).unwrap();
-                                data.prg_rom_mode = PrgRomMode::from_u8(prg_rom_mode).unwrap();
-                                data.chr_mode = ChrMode::from_u8((data.shifter >> 4) & 0b1).unwrap();
+                                mapper.mirror_mode = MirrorMode::from_u8(mapper.shifter & 0b11).unwrap();
+                                mapper.prg_rom_mode = PrgRomMode::from_u8(prg_rom_mode).unwrap();
+                                mapper.chr_mode = ChrMode::from_u8((mapper.shifter >> 4) & 0b1).unwrap();
 
-                                println!("Modes are now: {:?}, {:?}, {:?}", data.mirror_mode, data.prg_rom_mode, data.chr_mode);
+                                println!("Modes are now: {:?}, {:?}, {:?}", mapper.mirror_mode, mapper.prg_rom_mode, mapper.chr_mode);
                             },
-                            1 => data.chr_bank_0 = data.shifter,
-                            2 => data.chr_bank_1 = data.shifter,
-                            3 => data.prg_bank = data.shifter,
+                            1 => mapper.chr_bank_0 = mapper.shifter,
+                            2 => mapper.chr_bank_1 = mapper.shifter,
+                            3 => mapper.prg_bank = mapper.shifter,
                             _ => unreachable!(),
                         }
 
-                        data.shift_count = 0;
-                        data.shifter = 0;
+                        mapper.shift_count = 0;
+                        mapper.shifter = 0;
                     }
                 }
             },
@@ -284,63 +256,65 @@ impl MemLocation for Mapper1Location<'_> {
 }
 
 impl Mapped for Mapper1 {
-    fn mem_cpu<'a>(&'a self, addr: u16) -> Box<dyn MemLocation + 'a> {
+    fn mem_cpu<'a>(&'a mut self, addr: u16) -> Box<dyn MemLocation + 'a> {
         match addr {
             0x4020..=0x5FFF => {
                 println!("Returning wrapped from unmapped address {:#06X}", addr);
                 self.mem_cpu(addr + 0x2000)
             },
             0x6000..=0x7FFF => {
-                if self.data.borrow().prg_bank & (1 << 4) != 0 {
+                if self.prg_bank & (1 << 4) != 0 {
                     panic!("RAM is disabled")
                 }
-                Box::new(Mapper1Location::Ram((&self.prg_ram, (addr - 0x6000))))
+                Box::new(Mapper1Location::Ram((self.prg_ram, (addr - 0x6000)))
             },
             0x8000..=0xFFFF => Box::new(Mapper1Location::Mmio((self, addr))),
             _ => panic!(),
         }
     }
 
-    fn mem_ppu<'a>(&'a self, addr: u16) -> Box<dyn MemLocation + 'a> {
+    fn mem_ppu<'a>(&'a mut self, addr: u16) -> Box<dyn MemLocation + 'a> {
         if addr >= 0x2000 {
             panic!();
         }
 
-        let data = self.data.borrow();
+        let chr_rom = self.chr_rom.borrow();
 
-        match data.chr_mode {
+        match self.chr_mode {
             ChrMode::Individual => {
                 let bank_select = 
                 if (0x0000..=0x0FFF).contains(&addr) {
-                    data.chr_bank_0
+                    self.chr_bank_0
                 }
                 else {
-                    data.chr_bank_1
+                    self.chr_bank_1
                 };
 
                 let bank_start = 0x1000 * (bank_select as usize);
-                Box::new(Mapper1Location::Ram((&self.chr_rom, addr + bank_start as u16)))
+                let bank_end = bank_start + 0x1000;
+                Box::new(Mapper1Location::Ram((self.chr_rom, addr + bank_start as u16)))
             },
             ChrMode::DoubleSize => {
-                let bank_select = data.chr_bank_0 >> 1;
+                let bank_select = self.chr_bank_0 >> 1;
 
                 let bank_start = 0x2000 * (bank_select as usize);
+                let bank_end = bank_start + 0x2000;
 
-                Box::new(Mapper1Location::Ram((&self.chr_rom, addr + bank_start as u16)))
+                Box::new(Mapper1Location::Ram((self.chr_rom, addr + bank_start as u16)))
             },
         }
     }
 
     // TODO: The one-screen modes
     fn is_vert_mirrored(&self) -> bool {
-        self.data.borrow().mirror_mode == MirrorMode::Vertical
+        self.mirror_mode == MirrorMode::Vertical
     }
 }
 
 pub struct Mapper3 {
     prg_rom: Vec<u8>, // 16KiB or 32KiB, not bankswitched
-    chr: RefCell<Vec<u8>>, // Up to 2048KiB, bank size 8KiB
-    bank_select: RefCell<u8>,
+    chr: Vec<u8>, // Up to 2048KiB, bank size 8KiB
+    bank_select: u8,
 }
 
 impl Mapper3 {
@@ -349,52 +323,53 @@ impl Mapper3 {
         assert_eq!(chr.len() % 0x2000, 0);
         assert!(prg_rom.len() == 0x4000 || prg_rom.len() == 0x8000);
 
-        Mapper3 { prg_rom, chr: RefCell::new(chr), bank_select: RefCell::new(0) }
+        Mapper3 { prg_rom, chr, bank_select: 0 }
     }
 }
 
 enum Mapper3Location<'a> {
-    CPU((&'a RefCell<u8>, u8)),
-    PPU((&'a RefCell<Vec<u8>>, u16)),
+    CPU((&'a mut Mapper3, &'a u8)),
+    PPU(&'a mut u8),
 }
 
 impl MemLocation for Mapper3Location<'_> {
     fn read(&mut self) -> u8 {
         match self {
-            Mapper3Location::CPU((_, d)) => *d,
-            Mapper3Location::PPU((d, addr)) => d.borrow()[*addr as usize],
+            Mapper3Location::CPU((_, d)) => **d,
+            Mapper3Location::PPU(d) => **d,
         }
     }
 
     fn write(&mut self, value: u8) {
         match self {
-            Mapper3Location::CPU((bank_select, _)) => {
+            Mapper3Location::CPU((mapper, d)) => {
                 assert!(value <= 3);
-                *bank_select.borrow_mut() = value;
+                mapper.bank_select = value;
             },
-            Mapper3Location::PPU((d, addr)) => {
-                d.borrow_mut()[*addr as usize] = value;
+            Mapper3Location::PPU(d) => {
+                **d = value;
             },
         }
     }
 }
 
 impl Mapped for Mapper3 {
-    fn mem_cpu<'a>(&'a self, addr: u16) -> Box<dyn MemLocation + 'a> {
+    fn mem_cpu<'a>(&'a mut self, addr: u16) -> Box<dyn MemLocation + 'a> {
         if (0x8000..=0xFFFF).contains(&addr) {
-            let d = self.prg_rom[(addr - 0x8000) as usize];
-            Box::new(Mapper3Location::<'a>::CPU((&self.bank_select, d)))
+            Box::new(Mapper3Location::<'a>::CPU((self, &self.prg_rom[(addr - 0x8000) as usize])))
         }
         else {
             panic!()
         }
     }
 
-    fn mem_ppu<'a>(&'a self, addr: u16) -> Box<dyn MemLocation + 'a> {
+    fn mem_ppu<'a>(&'a mut self, addr: u16) -> Box<dyn MemLocation + 'a> {
         match addr {
             0x0000..=0x1FFF => {
-                let bank_start = (*self.bank_select.borrow() as usize * 0x2000) + addr as usize;
-                Box::new(Mapper3Location::<'a>::PPU((&self.chr, addr)))
+                let bank_start = self.bank_select as usize * 0x2000;
+                let bank_end = bank_start + 0x2000;
+                let bank = &mut self.chr[bank_start..bank_end];
+                Box::new(Mapper3Location::<'a>::PPU(&mut bank[addr as usize]))
             },
             _ => panic!(),
         }

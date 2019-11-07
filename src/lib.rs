@@ -21,11 +21,13 @@ pub mod apu;
 pub mod controller;
 pub mod mapper;
 pub mod instruction;
+mod mem_location;
+
+use mem_location::*;
 
 use rom::Rom;
 use ppu::PPU;
 use apu::APU;
-use mapper::MappedLocation;
 use controller::Controller;
 use std::cell::RefCell;
 use std::num::Wrapping;
@@ -36,6 +38,7 @@ use sdl2::{Sdl, VideoSubsystem, EventPump};
 use sdl2::render::WindowCanvas;
 use mapper::{Mapped, Mapper0, Mapper1, Mapper3};
 use std::path::PathBuf;
+use num_traits::cast::FromPrimitive;
 
 /* 
  * Mapping 0:
@@ -83,29 +86,29 @@ pub struct Context {
 	pub x: u8,
 	pub y: u8,
 	pub sp: u8,
-    pub native_ram: [u8; 0x800],
+    pub native_ram: RefCell<Vec<u8>>,
     pub state: State,
     pub ppu: RefCell<PPU>,
     pub apu: RefCell<APU>,
     pub controller: RefCell<Controller>,
     pub sdl_system: SDLSystem,
-    pub mapper: Box<RefCell<dyn Mapped>>,
+    pub mapper: Box<dyn Mapped>,
     pub hit_breakpoint: bool,
     pub cycle: usize,
 }
 
 impl From<Rom> for Context {
     fn from(rom: Rom) -> Context {
-        let mapper: Box<RefCell<dyn Mapped>> = 
+        let mapper: Box<dyn Mapped> = 
         if rom.mapper == 0 {
-            Box::new(RefCell::new(Mapper0::new(rom.prg_rom, rom.chr_rom)))
+            Box::new(Mapper0::new(rom.prg_rom, rom.chr_rom))
         }
         else if rom.mapper == 1 {
             /*Box::new(RefCell::new(Mapper1::new(rom.prg_rom, rom.chr_rom)))*/
-            Box::new(RefCell::new(Mapper1::new(rom.prg_rom, [0; 0x2000].to_vec())))
+            Box::new(Mapper1::new(rom.prg_rom, [0; 0x2000].to_vec()))
         }
         else if rom.mapper == 3 {
-            Box::new(RefCell::new(Mapper3::new(rom.prg_rom, rom.chr_rom)))
+            Box::new(Mapper3::new(rom.prg_rom, rom.chr_rom))
         }
         else {
             panic!()
@@ -123,53 +126,13 @@ impl From<Rom> for Context {
 			y: 0,
 			sp: 0,
             cycle: 0,
-            native_ram: [0; 0x800],
             state: State::Reset,
+            native_ram: RefCell::new([0; 0x800].to_vec()),
             apu: RefCell::new(APU::new()),
             controller: RefCell::new(Controller::new()),
             sdl_system: SDLSystem::new(),
         }
     }
-}
-
-#[derive(PartialEq, Eq, Debug, Clone, Copy)]
-enum MemLocation<T> {
-    Ram(T),
-    Rom(T),
-    Ppu(u8),
-    Apu(u8),
-    Controller(u8),
-    Mapped(MappedLocation<T>),
-}
-
-impl<'a, T> From<MemLocation<&'a mut T>> for MemLocation<&'a T> {
-    fn from(mem: MemLocation<&'a mut T>) -> MemLocation<&'a T> {
-        match mem {
-            MemLocation::Ram(t) => MemLocation::Ram(&(*t)),
-            MemLocation::Rom(t) => MemLocation::Rom(&(*t)),
-            MemLocation::Ppu(t) => MemLocation::Ppu(t),
-            MemLocation::Apu(t) => MemLocation::Apu(t),
-            MemLocation::Controller(t) => MemLocation::Controller(t),
-            MemLocation::Mapped(t) => MemLocation::Mapped(t.into()),
-        }
-    }
-}
-
-// TODO: See if there is a better way to do this
-macro_rules! get_mem {
-    ($addr:ident, $mapper:ident, $ctx:ident, $($ref_t:tt)+) => ({
-        match $addr {
-            0x0000..=0x1FFF => MemLocation::Ram($($ref_t)+ $ctx.native_ram[($addr % 0x0800) as usize]),
-            0x2000..=0x3FFF => MemLocation::Ppu((($addr - 0x2000) % 0x8) as u8),
-            0x4000..=0x4013 => MemLocation::Apu(($addr - 0x4000) as u8),
-            0x4014..=0x4014 => MemLocation::Ppu(14),
-            0x4015..=0x4015 => MemLocation::Apu(15),
-            0x4016..=0x4016 => MemLocation::Controller(0),
-            0x4017..=0x4017 => MemLocation::Apu(17),
-            0x4018..=0x401F => unimplemented!("Access to normally disabled APU or IO register at {:#04X}", $addr),
-            0x4020..=0xFFFF => MemLocation::Mapped($mapper.mem_cpu($addr).into()),
-        }
-    });
 }
 
 pub struct SDLSystem {
@@ -212,40 +175,65 @@ impl Context {
         res
     }
 
-    pub fn read_m(&self, addr: u16, mapper: &mut dyn Mapped) -> u8 {
-        match get_mem!(addr, mapper, self, &) {
-            MemLocation::Rom(val) => *val,
-            MemLocation::Ram(val) => *val,
-            MemLocation::Ppu(reg) => self.ppu.borrow_mut().read(reg, &mut *mapper),
-            MemLocation::Apu(reg) => self.apu.borrow_mut().read(reg),
-            MemLocation::Controller(reg) => self.controller.borrow_mut().read(reg),
-            MemLocation::Mapped(_) => mapper.read_cpu(addr),
+    pub fn cpu_address<'a>(&'a self, addr: u16) -> Box<dyn MemLocation + 'a> {
+        match addr {
+            0x0000..=0x1FFF => Box::new(RamLocation { mem: &self.native_ram, addr: (addr % 0x0800) }),
+            0x2000..=0x3FFF => Box::new(PPURegister { context: self, ppu: &self.ppu, reg: PPURegInt::from_usize(((addr - 0x2000) % 0x8) as usize).unwrap() }),
+            0x4000..=0x4013 => Box::new(APURegister { apu: &self.apu, register: (addr - 0x4000) as usize }),
+            0x4014..=0x4014 => Box::new(PPURegister { context: self, ppu: &self.ppu, reg: PPURegInt::from_u8(14).unwrap() }),
+            0x4015..=0x4015 => Box::new(APURegister { apu: &self.apu, register: 15 }),
+            0x4016..=0x4016 => Box::new(CTLRegister { ctl: &self.controller, register: 0 }),
+            0x4017..=0x4017 => Box::new(APURegister { apu: &self.apu, register: 17 }),
+            0x4018..=0x401F => unimplemented!("Access to normally disabled APU or IO register at {:#04X}", addr),
+            0x4020..=0xFFFF => self.mapper.mem_cpu(addr),
+        }
+    }
+
+    pub fn ppu_address<'a>(&'a self, addr: u16) -> Box<dyn MemLocation + 'a> {
+        let addr = addr % 0x4000;
+        /* TODO: Vertical/Horizontal mirroring */
+        match addr {
+            0x0000..=0x1FFF => self.mapper.mem_ppu(addr),
+            0x2000..=0x3EFF => {
+                let canon = if self.mapper.is_vert_mirrored() {
+                    (addr - 0x2000) % 0x800
+                }
+                else {
+                    let addr = (addr - 0x2000) % 0x1000;
+                    match addr {
+                        0x0000..=0x03FF => addr, // 0x0000 to 0x03FF
+                        0x0400..=0x07FF => addr - 0x400, // maps to same as above
+                        0x0800..=0x0BFF => addr - 0x400, // 0x0400 to 0x07FF
+                        0x0000..=0x1400 => addr - 0x400 - 0x400, // maps to same as above
+                        _ => unreachable!(),
+                    }
+                };
+
+                Box::new(PPUNametable { ppu: &self.ppu, addr: canon as usize })
+            }, 
+            /* TODO: Do this better */
+            0x3F10 => Box::new(PPUPalette { ppu: &self.ppu, addr: 0x0 }),
+            0x3F14 => Box::new(PPUPalette { ppu: &self.ppu, addr: 0x4 }),
+            0x3F18 => Box::new(PPUPalette { ppu: &self.ppu, addr: 0x8 }),
+            0x3F1C => Box::new(PPUPalette { ppu: &self.ppu, addr: 0xC }),
+            0x3F00..=0x3FFF => Box::new(PPUPalette { ppu: &self.ppu, addr: ((addr - 0x3F00) % 0x20) as usize }),
+            _ => unreachable!(),
         }
     }
 
     pub fn read(&self, addr: u16) -> u8 {
-        let mut mapper = self.mapper.borrow_mut();
-        self.read_m(addr, &mut *mapper)
+        self.cpu_address(addr).read()
     }
 
     pub fn write(&mut self, addr: u16, value: u8) {
-        let mut mapper = self.mapper.borrow_mut();
-        let location = get_mem!(addr, mapper, self, &mut);
-        match location {
-            MemLocation::Rom(_val) => panic!("Attempt to write to ROM at {:#06?}", addr),
-            MemLocation::Ram(val) => *val = value,
-            MemLocation::Ppu(reg) => self.ppu.borrow_mut().write(reg, value, self, &mut *mapper),
-            MemLocation::Apu(reg) => self.apu.borrow_mut().write(reg, value),
-            MemLocation::Controller(reg) => self.controller.borrow_mut().write(reg, value),
-            MemLocation::Mapped(_) => mapper.write_cpu(addr, value),
-        }
+        self.cpu_address(addr).write(value)
     }
 
-    pub fn read_wide_nowrap(&self, addr: u16) -> u16 {
+    pub fn read_wide_nowrap(&mut self, addr: u16) -> u16 {
         (self.read(addr + 1) as u16) << 8 | self.read(addr) as u16
     }
 
-    pub fn read_wide(&self, addr: u16) -> u16 {
+    pub fn read_wide(&mut self, addr: u16) -> u16 {
         let page = addr & 0xFF00;
         let idx = (Wrapping((addr & 0xFF) as u8) + Wrapping(1)).0 as u16;
         let addr_next = page | idx;
@@ -310,7 +298,8 @@ impl Context {
         self.pc = (self.read(0xFFFB) as u16) << 8 | self.read(0xFFFA) as u16;
         self.state = State::Nmi;
         
-        println!("NMI triggered, PC is now {:#06X} ({:#04X})", self.pc, self.read(self.pc));
+        let i = self.read(self.pc);
+        println!("NMI triggered, PC is now {:#06X} ({:#04X})", self.pc, i);
     }
 
 	pub fn try_irq(&mut self) -> bool {
@@ -384,7 +373,7 @@ impl Context {
             self.cycle += cycles as usize;
 
             /* TODO: Actually count the number of cycles properly */
-            self.ppu.borrow_mut().next(cycles as usize, &mut self.sdl_system, &mut (*self.mapper.borrow_mut()));
+            self.ppu.borrow_mut().next(cycles as usize, &mut self.sdl_system, &mut (*self.mapper));
 
             if self.ppu.borrow_mut().nmi_falling() {
                 self.trigger_nmi();
@@ -392,7 +381,7 @@ impl Context {
         }
     }
 
-    fn print_instr(&self, instr: &Instruction) {
+    fn print_instr(&mut self, instr: &Instruction) {
         print!("[PC: {:#06X}] A:{:02X} X:{:02X} Y:{:02X} P:{:02X} SP:{:02X} {} {: >4?}:", self.pc, self.acc, self.x, self.y, self.status, self.sp, instr.opcode, instr.mode);
         for i in 0..instr.mode.len() {
             print!("{:#04X} ", self.read(self.pc + i as u16));
@@ -400,7 +389,7 @@ impl Context {
         println!("");
     }
 
-    fn print_stack(&self) {
+    fn print_stack(&mut self) {
         println!("SP: {:#04X}, Stack:", self.sp);
         for i in self.sp..=255 {
             println!("{:#04X}: {:#04X}", i, self.read(i as u16));

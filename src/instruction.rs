@@ -447,13 +447,15 @@ fn AAX(ctx: &mut Context, addr: u16) {
 }
 
 fn DCP(ctx: &mut Context, addr: u16) {
-    ctx.write(addr, (Wrapping(ctx.read(addr)) - Wrapping(1)).0);
-    COMPARE(ctx, ctx.acc, ctx.read(addr));
+    let v = (Wrapping(ctx.read(addr)) - Wrapping(1)).0;
+    ctx.write(addr, v);
+    COMPARE(ctx, ctx.acc, v);
 }
 
 fn ISC(ctx: &mut Context, addr: u16) {
-    ctx.write(addr, (Wrapping(ctx.read(addr)) + Wrapping(1)).0);
-    SUB(ctx, ctx.read(addr));
+    let v = (Wrapping(ctx.read(addr)) + Wrapping(1)).0;
+    ctx.write(addr, v);
+    SUB(ctx, v);
 }
 
 fn SLO(ctx: &mut Context, addr: u16) {
@@ -467,7 +469,8 @@ fn SLO(ctx: &mut Context, addr: u16) {
 }
 
 fn RLA(ctx: &mut Context, addr: u16) {
-    let result = rol(ctx, ctx.read(addr));
+    let v = ctx.read(addr);
+    let result = rol(ctx, v);
     ctx.write(addr, result);
     ctx.acc &= result;
     ctx.update_flags(ctx.acc);
@@ -484,7 +487,8 @@ fn SRE(ctx: &mut Context, addr: u16) {
 }
 
 fn RRA(ctx: &mut Context, addr: u16) {
-    let result = ror(ctx, ctx.read(addr));
+    let read = ctx.read(addr);
+    let result = ror(ctx, read);
     ctx.write(addr, result);
     ADC_imm(ctx, result);
 }
@@ -537,19 +541,19 @@ fn BNE(ctx: &mut Context, offset: u8) { BRANCH(ctx, offset, !ctx.get_zero()) }
 fn CPX_imm(ctx: &mut Context, imm: u8) { COMPARE(ctx, ctx.x, imm) }
 fn BEQ(ctx: &mut Context, offset: u8) { BRANCH(ctx, offset,  ctx.get_zero()) }
 
-fn ORA(ctx: &mut Context, addr: u16) { ORA_imm(ctx, ctx.read(addr)) }
+fn ORA(ctx: &mut Context, addr: u16) { let v = ctx.read(addr); ORA_imm(ctx, v) }
 fn ORA_imm(ctx: &mut Context, imm: u8) { ctx.acc |= imm; ctx.update_flags(ctx.acc); }
-fn AND(ctx: &mut Context, addr: u16) { AND_imm(ctx, ctx.read(addr)) }
+fn AND(ctx: &mut Context, addr: u16) { let v = ctx.read(addr); AND_imm(ctx, v) }
 fn AND_imm(ctx: &mut Context, imm: u8) { ctx.acc &= imm; ctx.update_flags(ctx.acc); }
-fn EOR(ctx: &mut Context, addr: u16) { EOR_imm(ctx, ctx.read(addr)) }
+fn EOR(ctx: &mut Context, addr: u16) { let v = ctx.read(addr); EOR_imm(ctx, v) }
 fn EOR_imm(ctx: &mut Context, imm: u8) { ctx.acc ^= imm; ctx.update_flags(ctx.acc); }
-fn LDA(ctx: &mut Context, addr: u16) { LDA_imm(ctx, ctx.read(addr)) }
+fn LDA(ctx: &mut Context, addr: u16) { let v = ctx.read(addr); LDA_imm(ctx, v) }
 fn LDA_imm(ctx: &mut Context, imm: u8) { ctx.acc = imm; ctx.update_flags(ctx.acc); }
-fn CMP(ctx: &mut Context, addr: u16) { CMP_imm(ctx, ctx.read(addr)) }
+fn CMP(ctx: &mut Context, addr: u16) { let v = ctx.read(addr); CMP_imm(ctx, v) }
 fn CMP_imm(ctx: &mut Context, imm: u8) { COMPARE(ctx, ctx.acc, imm); }
-fn SBC(ctx: &mut Context, addr: u16) { SBC_imm(ctx, ctx.read(addr)) }
+fn SBC(ctx: &mut Context, addr: u16) { let v = ctx.read(addr); SBC_imm(ctx, v) }
 fn SBC_imm(ctx: &mut Context, imm: u8) { SUB(ctx, imm); }
-fn ADC(ctx: &mut Context, addr: u16) { ADC_imm(ctx, ctx.read(addr)); }
+fn ADC(ctx: &mut Context, addr: u16) { let v = ctx.read(addr); ADC_imm(ctx, v); }
 fn STA(ctx: &mut Context, addr: u16) { ctx.write(addr, ctx.acc); }
 
 fn LDX_imm(ctx: &mut Context, imm: u8) { ctx.x = imm; ctx.update_flags(ctx.x); }
@@ -565,32 +569,32 @@ fn TAX(ctx: &mut Context) { ctx.x = ctx.acc; ctx.update_flags(ctx.x); }
 fn TSX(ctx: &mut Context) { ctx.x = ctx.sp; ctx.update_flags(ctx.x); }
 fn TXS(ctx: &mut Context) { ctx.sp = ctx.x; }
 
-fn CPY(ctx: &mut Context, addr: u16) { COMPARE(ctx, ctx.y, ctx.read(addr)); }
-fn CPX(ctx: &mut Context, addr: u16) { COMPARE(ctx, ctx.x, ctx.read(addr)); }
+fn CPY(ctx: &mut Context, addr: u16) { let v = ctx.read(addr); COMPARE(ctx, ctx.y, v); }
+fn CPX(ctx: &mut Context, addr: u16) { let v = ctx.read(addr); COMPARE(ctx, ctx.x, v); }
 
-fn ASL(ctx: &mut Context, addr: u16) { let val = asl(ctx, ctx.read(addr)); ctx.write(addr, val); }
+fn ASL(ctx: &mut Context, addr: u16) { let v = ctx.read(addr); let val = asl(ctx, v); ctx.write(addr, val); }
 fn ASL_imp(ctx: &mut Context) { ctx.acc = asl(ctx, ctx.acc); }
-fn ROL(ctx: &mut Context, addr: u16) { let val = rol(ctx, ctx.read(addr)); ctx.write(addr, val); }
+fn ROL(ctx: &mut Context, addr: u16) { let v = ctx.read(addr); let val = rol(ctx, v); ctx.write(addr, val); }
 fn ROL_imp(ctx: &mut Context) { ctx.acc = rol(ctx, ctx.acc); }
-fn LSR(ctx: &mut Context, addr: u16) { let val = lsr(ctx, ctx.read(addr)); ctx.write(addr, val); }
+fn LSR(ctx: &mut Context, addr: u16) { let v = ctx.read(addr); let val = lsr(ctx, v); ctx.write(addr, val); }
 fn LSR_imp(ctx: &mut Context) { ctx.acc = lsr(ctx, ctx.acc); }
-fn ROR(ctx: &mut Context, addr: u16) { let val = ror(ctx, ctx.read(addr)); ctx.write(addr, val); }
+fn ROR(ctx: &mut Context, addr: u16) { let v = ctx.read(addr); let val = ror(ctx, v); ctx.write(addr, val); }
 fn ROR_imp(ctx: &mut Context) { ctx.acc = ror(ctx, ctx.acc); }
 
-fn STX(ctx: &mut crate::Context, addr: u16) { ctx.write(addr, ctx.x); }
-fn LDX(ctx: &mut crate::Context, addr: u16) { ctx.x = ctx.read(addr); ctx.update_flags(ctx.x) }
+fn STX(ctx: &mut Context, addr: u16) { ctx.write(addr, ctx.x); }
+fn LDX(ctx: &mut Context, addr: u16) { ctx.x = ctx.read(addr); ctx.update_flags(ctx.x) }
 
-fn DEC(ctx: &mut crate::Context, addr: u16) { ctx.write(addr, (Wrapping(ctx.read(addr)) - Wrapping(1)).0); ctx.update_flags(ctx.read(addr)); }
-fn INC(ctx: &mut crate::Context, addr: u16) { ctx.write(addr, (Wrapping(ctx.read(addr)) + Wrapping(1)).0); ctx.update_flags(ctx.read(addr)); }
-fn DEY(ctx: &mut crate::Context) { ctx.y = (Wrapping(ctx.y) - Wrapping(1)).0; ctx.update_flags(ctx.y); }
-fn INY(ctx: &mut crate::Context) { ctx.y = (Wrapping(ctx.y) + Wrapping(1)).0; ctx.update_flags(ctx.y); }
-fn INX(ctx: &mut crate::Context) { ctx.x = (Wrapping(ctx.x) + Wrapping(1)).0; ctx.update_flags(ctx.x); }
-fn DEX(ctx: &mut crate::Context) { ctx.x = (Wrapping(ctx.x) - Wrapping(1)).0; ctx.update_flags(ctx.x); }
+fn DEC(ctx: &mut Context, addr: u16) { let v = (Wrapping(ctx.read(addr)) - Wrapping(1)).0; ctx.write(addr, v); ctx.update_flags(v); }
+fn INC(ctx: &mut Context, addr: u16) { let v = (Wrapping(ctx.read(addr)) + Wrapping(1)).0; ctx.write(addr, v); ctx.update_flags(v); }
+fn DEY(ctx: &mut Context) { ctx.y = (Wrapping(ctx.y) - Wrapping(1)).0; ctx.update_flags(ctx.y); }
+fn INY(ctx: &mut Context) { ctx.y = (Wrapping(ctx.y) + Wrapping(1)).0; ctx.update_flags(ctx.y); }
+fn INX(ctx: &mut Context) { ctx.x = (Wrapping(ctx.x) + Wrapping(1)).0; ctx.update_flags(ctx.x); }
+fn DEX(ctx: &mut Context) { ctx.x = (Wrapping(ctx.x) - Wrapping(1)).0; ctx.update_flags(ctx.x); }
 
-fn PHP(ctx: &mut crate::Context) { ctx.push(ctx.status | (0b11 << 4)) }
-fn PLP(ctx: &mut crate::Context) { ctx.status = (ctx.pop() & !(0b01 << 4)) | (0b10 << 4); }
-fn PHA(ctx: &mut crate::Context) { ctx.push(ctx.acc); }
-fn PLA(ctx: &mut crate::Context) { ctx.acc = ctx.pop(); ctx.update_flags(ctx.acc); }
+fn PHP(ctx: &mut Context) { ctx.push(ctx.status | (0b11 << 4)) }
+fn PLP(ctx: &mut Context) { ctx.status = (ctx.pop() & !(0b01 << 4)) | (0b10 << 4); }
+fn PHA(ctx: &mut Context) { ctx.push(ctx.acc); }
+fn PLA(ctx: &mut Context) { ctx.acc = ctx.pop(); ctx.update_flags(ctx.acc); }
 
 fn CLC(ctx: &mut Context) { ctx.set_carry(false); }
 fn SEC(ctx: &mut Context) { ctx.set_carry(true); }

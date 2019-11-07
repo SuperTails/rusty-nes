@@ -1,9 +1,10 @@
 use sdl2::pixels::Color;
 use sdl2::rect::Point;
-use super::MemLocation;
 use super::SDLSystem;
 use crate::mapper::Mapped;
+use std::cell::RefCell;
 use std::num::Wrapping;
+use crate::Context;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct PalettedColor(pub u8);
@@ -44,7 +45,7 @@ impl Default for OAMEntry {
     }
 }
 
-bitfield!{
+bitfield! {
     pub struct PPUCtrl(u8);
     impl Debug;
 
@@ -84,7 +85,7 @@ fn render_pattern_tables(sdl_system: &mut SDLSystem, mapper: &mut dyn Mapped) {
                 // TODO: Don't read the whole thing
                 let mut entry = Vec::with_capacity(16);
                 for i in 0..16 {
-                    entry.push(mapper.read_ppu(i + (row * 16 + col) * 16 + 0x1000 * table));
+                    entry.push(mapper.mem_ppu(i + (row * 16 + col) * 16 + 0x1000 * table).read());
                 }
                 for y in 0..8 {
                     for x in 0..8 {
@@ -118,18 +119,18 @@ pub struct PPU {
     pub mask: u8,
 
     /* TODO: Sprite zero hit, Sprite Overflow, Proper VBlank */
-    pub status: u8,
+    pub status: RefCell<u8>,
 
     pub cycles: u128,
-    pub address: u16,
-    pub scroll: u16,
+    pub address: RefCell<u16>,
+    pub scroll: RefCell<u16>,
 
-    pub name_tables: [u8; 0x800],
+    pub name_tables: RefCell<Vec<u8>>,
 
-    pub palette_idxs: [u8; 0x20],
+    pub palette_idxs: RefCell<[u8; 0x20]>,
 
-    pub oam_addr: u8,
-    pub oam: [OAMEntry; 64],
+    pub oam_addr: RefCell<u8>,
+    pub oam: RefCell<[OAMEntry; 64]>,
 
     prev_nmi_state: bool,
 
@@ -137,40 +138,6 @@ pub struct PPU {
     pixel: usize,
 
     colors: Vec<Color>,
-}
-
-macro_rules! get_mem {
-    ($addr:expr, $mapper:expr, $ctx:ident, $($ref_t:tt)+) => ({
-        let addr = $addr % 0x4000;
-        /* TODO: Vertical/Horizontal mirroring */
-        match addr {
-            0x0000..=0x1FFF => MemLocation::Mapped($mapper.mem_ppu(addr).into()),
-            0x2000..=0x3EFF => {
-                let canon = if $mapper.is_vert_mirrored() {
-                    (addr - 0x2000) % 0x800
-                }
-                else {
-                    let addr = (addr - 0x2000) % 0x1000;
-                    match addr {
-                        0x0000..=0x03FF => addr, // 0x0000 to 0x03FF
-                        0x0400..=0x07FF => addr - 0x400, // maps to same as above
-                        0x0800..=0x0BFF => addr - 0x400, // 0x0400 to 0x07FF
-                        0x0000..=0x1400 => addr - 0x400 - 0x400, // maps to same as above
-                        _ => unreachable!(),
-                    }
-                };
-
-                MemLocation::Ram($($ref_t)+ $ctx.name_tables[canon as usize])
-            }, 
-            /* TODO: Do this better */
-            0x3F10 => MemLocation::Ram($($ref_t)+ $ctx.palette_idxs[0x0]),
-            0x3F14 => MemLocation::Ram($($ref_t)+ $ctx.palette_idxs[0x4]),
-            0x3F18 => MemLocation::Ram($($ref_t)+ $ctx.palette_idxs[0x8]),
-            0x3F1C => MemLocation::Ram($($ref_t)+ $ctx.palette_idxs[0xC]),
-            0x3F00..=0x3FFF => MemLocation::Ram($($ref_t)+ $ctx.palette_idxs[((addr - 0x3F00) % 0x20) as usize]),
-            _ => unreachable!(),
-        }
-    });
 }
 
 impl PPU {
@@ -181,20 +148,20 @@ impl PPU {
             scanline: 0,
             pixel: 0,
             mask: 0,
-            status: 0,
+            status: RefCell::new(0),
             cycles: 0,
-            address: 0,
-            scroll: 0,
-            name_tables: [0; 0x800],
-            palette_idxs: [0; 0x20],
-            oam_addr: 0,
+            address: RefCell::new(0),
+            scroll: RefCell::new(0),
+            name_tables: RefCell::new([0; 0x800].to_vec()),
+            palette_idxs: RefCell::new([0; 0x20]),
+            oam_addr: RefCell::new(0),
             colors: PPU::get_colors(),
-            oam: [OAMEntry::default(); 64],
+            oam: RefCell::new([OAMEntry::default(); 64]),
         }
     }
 
     pub fn nmi_falling(&mut self) -> bool {
-        let nmi_occurred = self.status & 0x80 != 0;
+        let nmi_occurred = *self.status.borrow() & 0x80 != 0;
 
         let new_state = self.ctrl.nmi_enabled() && nmi_occurred;
 
@@ -226,14 +193,14 @@ impl PPU {
 
             if (0..=240).contains(&self.scanline) {
                 if (257..=320).contains(&self.pixel) {
-                    self.oam_addr = 0;
+                    *self.oam_addr.borrow_mut() = 0;
                 }
             }
 
             match self.scanline {
                 0..=0       => { /* Pre-render scanline */
                     // TODO: Clear sprite-0 hit at the right time
-                    self.status &= !(1 << 6);
+                    *self.status.borrow_mut() &= !(1 << 6);
                 },
                 1..=240     => { /* Render scanline */
                     // Rendering
@@ -252,13 +219,13 @@ impl PPU {
                             }
                         }*/
                         sdl_system.present();
-                        self.status |= 1 << 7;
+                        *self.status.borrow_mut() |= 1 << 7;
                     }
                 },
                 /* 262 */ _ => { /* Pre-render scanline */
                     self.scanline = 0;
                     /* TODO: Check if this is the right time to clear nmi_occurred */
-                    self.status &= !0x80;
+                    *self.status.borrow_mut() &= !0x80;
                 },
             }
         }
@@ -267,7 +234,7 @@ impl PPU {
     fn render_oam(&self, sdl_system: &mut SDLSystem, mapper: &mut dyn Mapped) {
         for row in 0..8 {
             for col in 0..8 {
-                let entry = &self.oam[row * 8 + col];
+                let entry = &self.oam.borrow()[row * 8 + col];
                 let height = if self.ctrl.sprite_size() { 16 } else { 8 };
                 for y in 0..height {
                     for x in 0..8 {
@@ -289,7 +256,7 @@ impl PPU {
 
         let idx = tile_color.0 | palette_idx << 2 | (sprite as u8) << 4;
 
-        self.palette_idxs[idx as usize]
+        self.palette_idxs.borrow()[idx as usize]
     }
 
     fn get_colors() -> Vec<Color> {
@@ -301,17 +268,16 @@ impl PPU {
             .collect()
     }
 
-    fn selected_name_table(&self) -> &[u8] {
+    fn selected_name_table(&self) -> usize {
         /* TODO: Vertical/horizontal mirroring */
-        let x_scroll = (self.scroll >> 8) as usize;
-        let y_scroll = (self.scroll & 0xFF) as usize;
+        let x_scroll = (*self.scroll.borrow() >> 8) as usize;
+        let y_scroll = (*self.scroll.borrow() & 0xFF) as usize;
         let selected = (self.ctrl.nametable_addr() & /*3*/ 1) as usize * 0x400 + 32 * (y_scroll / 8) + (x_scroll / 8);
-        &self.name_tables[selected..selected + 0x400]
+        selected
     }
 
-    fn selected_attr_table(&self) -> &[u8] {
-        let name_table = self.selected_name_table();
-        &name_table[(name_table.len() - 64)..]
+    fn selected_attr_table(&self) -> usize {
+        self.selected_name_table() + 0x400 - 64
     }
 
     fn selected_patt_table_bg(&self) -> u16 {
@@ -323,21 +289,22 @@ impl PPU {
     }
 
 
-    fn get_background_color(&mut self, mapper: &mut dyn Mapped, x: usize, y: usize) -> (PalettedColor, Color) {
+    fn get_background_color(&self, mapper: &mut dyn Mapped, x: usize, y: usize) -> (PalettedColor, Color) {
         let row = y / 8;
         let col = x / 8;
 
-        let name_table = self.selected_name_table();
+        let name_tables = self.name_tables.borrow();
+        let name_table = &name_tables[self.selected_name_table()..self.selected_name_table()+0x400];
         let attr_table = self.selected_attr_table();
         let pattern_table = self.selected_patt_table_bg();
 
         let tile_name = name_table[row * 32 + col];
 
-        let palette_idx = get_palette_index(attr_table, row as u8, col as u8);
+        let palette_idx = get_palette_index(&name_table[attr_table..attr_table+64], row as u8, col as u8);
 
         let mut pattern = Vec::with_capacity(16);
         for i in 0..16 {
-            pattern.push(mapper.read_ppu(i + pattern_table + 16 * tile_name as u16));
+            pattern.push(mapper.mem_ppu(i + pattern_table + 16 * tile_name as u16).read());
         }
 
         let color = color_in_pattern(&pattern, (y % 8) as u8, (x % 8) as u8);
@@ -386,7 +353,7 @@ impl PPU {
 
         let mut pattern = Vec::with_capacity(16);
         for i in 0..16 {
-            pattern.push(mapper.read_ppu(i + selected_patt_table + 16 * index as u16));
+            pattern.push(mapper.mem_ppu(i + selected_patt_table + 16 * index as u16).read());
         }
 
         let sprite_color = color_in_pattern(&pattern, s_y, s_x);
@@ -397,16 +364,18 @@ impl PPU {
     }
 
     fn for_each_pixel(&mut self, sdl_system: &mut SDLSystem, mapper: &mut dyn Mapped) {
-        if self.pixel + ((self.scroll >> 8) % 8) as usize >= 256 {
+        let scroll = self.scroll.borrow();
+
+        if self.pixel + ((*scroll >> 8) % 8) as usize >= 256 {
             return;
         }
 
-        let bg_color = self.get_background_color(mapper, self.pixel + ((self.scroll >> 8) % 8) as usize, self.scanline - 1 + (self.scroll as usize & 0xFF) % 8);
+        let bg_color = self.get_background_color(mapper, self.pixel + ((*scroll >> 8) % 8) as usize, self.scanline - 1 + (*scroll as usize & 0xFF) % 8);
 
         sdl_system.canvas().set_scale(2.0, 2.0).unwrap();
         let mut sprite_colors = Vec::new();
 
-        for object in self.oam.iter() {
+        for object in self.oam.borrow().iter() {
             if self.scanline < 2 {
                 break;
             }
@@ -425,7 +394,7 @@ impl PPU {
         // TODO: Properly sort sprites
         let output = if sprite_colors.len() == 0 {
             if (bg_color.0).0 == 0 {
-                self.colors[self.palette_idxs[0] as usize]
+                self.colors[self.palette_idxs.borrow()[0] as usize]
             }
             else {
                 bg_color.1
@@ -436,16 +405,16 @@ impl PPU {
 
             // TODO: I think this should only be triggered once
             if (bg_color.0).0 != 0 && (sprite_color.0).0 != 0 {
-                self.status |= 1 << 6;
+                *self.status.borrow_mut() |= 1 << 6;
             }
 
             // TODO: Check sprite-0 hit conditions properly
             if (bg_color.0).0 != 0 && (sprite_color.0).0 != 0 {
-                self.status |= 1 << 6;
+                *self.status.borrow_mut() |= 1 << 6;
             }
 
             match ((bg_color.0).0, (sprite_color.0).0, sprite_color.2) {
-                (0, 0, _)     => self.colors[self.palette_idxs[0] as usize],
+                (0, 0, _)     => self.colors[self.palette_idxs.borrow()[0] as usize],
                 (0, _, _)     => sprite_color.1,
                 (_, 0, _)     => bg_color.1,
                 (_, _, false) => sprite_color.1,
@@ -458,27 +427,28 @@ impl PPU {
         sdl_system.canvas().draw_point(Point::new(self.pixel as i32, (self.scanline - 1) as i32)).unwrap();
     }
 
-    fn incr_address(&mut self) {
+    pub fn incr_address(&mut self) {
         if self.ctrl.increment_mode() {
-            self.address += 32;
+            *self.address.borrow_mut() += 32;
         }
         else {
-            self.address += 1;
+            *self.address.borrow_mut() += 1;
         }
     }
 
 
-    fn dma(&mut self, addr: u8, ctx: &crate::Context, mapper: &mut dyn Mapped) {
+    pub fn dma(&self, addr: u8, ctx: &crate::Context) {
         /* TODO: Determine if this should depend on oam_addr */
         //print!("{:#06X}, OAM: [", addr);
         for idx in 0..64 {
             let full_addr = (addr as u16) << 8 | (idx * 4);
 
-            self.oam[idx as usize] = OAMEntry {
-                y: ctx.read_m(full_addr + 0, mapper),
-                index: ctx.read_m(full_addr + 1, mapper),
-                attrs: OAMEntryAttrs(ctx.read_m(full_addr + 2, mapper)),
-                x: ctx.read_m(full_addr + 3, mapper),
+            // TODO: Access properly
+            self.oam.borrow_mut()[idx as usize] = OAMEntry {
+                y: ctx.native_ram.borrow()[(full_addr + 0) as usize],
+                index: ctx.native_ram.borrow()[(full_addr + 1) as usize],
+                attrs: OAMEntryAttrs(ctx.native_ram.borrow()[(full_addr + 2) as usize]),
+                x: ctx.native_ram.borrow()[(full_addr + 3) as usize],
             };
             
             /*if self.oam[idx as usize].y != 248 {
@@ -489,7 +459,7 @@ impl PPU {
         //println!("]");
     }
 
-    pub fn read(&mut self, reg: u8, mapper: &mut dyn Mapped) -> u8 {
+    /*pub fn read(&mut self, reg: u8, context: &Context) -> u8 {
         /* TODO: Figure out which of these you *can* read from*/
         match reg {
             0 => self.ctrl.0,
@@ -515,15 +485,7 @@ impl PPU {
             6 => { println!("Cannot read from address register"); 0 },*/
             3|5|6 => 0,
             7 => {
-                let loc = get_mem!(self.address, mapper, self, &);
-                let result =
-                match loc {
-                    MemLocation::Ram(t) => *t,
-                    MemLocation::Rom(t) => *t,
-                    MemLocation::Mapped(_) => mapper.read_ppu(self.address),
-                    _ => unimplemented!("PPU read {:?}", loc),
-                };
-
+                let result = context.ppu_address(self.address).read();
                 self.incr_address();
                 result
             },
@@ -531,13 +493,13 @@ impl PPU {
         }
     }
 
-    pub fn write(&mut self, reg: u8, value: u8, ctx: &crate::Context, mapper: &mut dyn Mapped) {
+    pub fn write(&mut self, reg: u8, value: u8, ctx: &crate::Context) {
         //println!("Writing {} to reg {}", value, reg);
         match reg {
             0 => self.ctrl = PPUCtrl(value),
             1 => self.mask = value,
             2 => println!("Cannot write to status register"),
-            3 => self.oam_addr = value,
+            3 => *self.oam_addr.borrow_mut() = value,
             4 => {
                 let array_addr = self.oam_addr / 4;
                 let entry = &mut self.oam[array_addr as usize];
@@ -566,17 +528,11 @@ impl PPU {
                 //println!("Wrote {:#04X} to PPU address", value);
             },
             7 => { 
-                let loc = get_mem!(self.address, mapper, self, &mut);
-                match loc {
-                    MemLocation::Ram(t) => *t = value,
-                    MemLocation::Rom(_) => panic!("Write to ROM at {:#06X}", self.address),
-                    MemLocation::Mapped(_) => mapper.write_ppu(self.address % 0x4000, value),
-                    _ => unimplemented!("PPU write {:?}", loc),
-                }
+                ctx.ppu_address(self.address).write(value);
                 self.incr_address();
             },
-            14 => self.dma(value, ctx, mapper),
+            14 => self.dma(value, ctx),
             _ => panic!("Unknown register {}", reg),
         }
-    }
+    }*/
 }
