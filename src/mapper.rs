@@ -66,7 +66,6 @@ impl MemLocation for Mapper0Location<'_> {
 
 impl Mapped for Mapper0 {
     fn mem_cpu<'a>(&'a self, addr: u16) -> Box<dyn MemLocation + 'a> {
-        let prg_ram_len = self.prg_ram.borrow().len();
         let prg_rom_len = self.prg_rom.len();
         match addr {
             0x4020..=0x5FFF => panic!("CPU Read from unmapped cart memory at {:#06X}", addr),
@@ -278,7 +277,6 @@ impl MemLocation for Mapper1Location<'_> {
                     }
                 }
             },
-            _ => panic!(),
         }
     }
 }
@@ -393,7 +391,6 @@ impl Mapped for Mapper3 {
     fn mem_ppu<'a>(&'a self, addr: u16) -> Box<dyn MemLocation + 'a> {
         match addr {
             0x0000..=0x1FFF => {
-                let bank_start = (*self.bank_select.borrow() as usize * 0x2000) + addr as usize;
                 Box::new(Mapper3Location::<'a>::PPU((&self.chr, addr)))
             },
             _ => panic!(),

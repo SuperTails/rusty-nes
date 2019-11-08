@@ -1,5 +1,6 @@
 use crate::ppu::PPU;
 use crate::apu::APU;
+use crate::cpu::CPU;
 use crate::controller::Controller;
 use crate::Context;
 use std::cell::RefCell;
@@ -9,6 +10,21 @@ pub trait MemLocation {
     fn read(&mut self) -> u8;
 
     fn write(&mut self, value: u8);
+}
+
+pub struct CPURamLoc<'a> {
+    pub cpu: &'a RefCell<CPU>,
+    pub addr: u16,
+}
+
+impl MemLocation for CPURamLoc<'_> {
+    fn read(&mut self) -> u8 {
+        self.cpu.borrow().ram[self.addr as usize]
+    }
+
+    fn write(&mut self, value: u8) {
+        self.cpu.borrow_mut().ram[self.addr as usize] = value;
+    }
 }
 
 #[derive(Debug)]
@@ -94,11 +110,10 @@ pub enum PPURegInt {
 
 impl MemLocation for PPURegister<'_> {
     fn read(&mut self) -> u8 {
-        match self.reg {
+        let result = match self.reg {
             PPURegInt::Ctrl => self.ppu.borrow().ctrl.0,
             PPURegInt::Mask => self.ppu.borrow().mask,
             PPURegInt::Status => *self.ppu.borrow().status.borrow_mut(),
-            PPURegInt::Oamaddr => unimplemented!(),
             PPURegInt::Oamdata => {
                 let ppu = self.ppu.borrow();
                 let mut oam_addr = ppu.oam_addr.borrow_mut();
@@ -117,12 +132,9 @@ impl MemLocation for PPURegister<'_> {
 
                 result
             },
-            PPURegInt::Scroll => {
-                unimplemented!()
-            },
-            PPURegInt::Addr => {
-                unimplemented!()
-            },
+            PPURegInt::Scroll |
+            PPURegInt::Addr |
+            PPURegInt::Oamaddr => self.ppu.borrow().last_value,
             PPURegInt::Data => {
                 let result = self.context.ppu_address(*self.ppu.borrow().address.borrow()).read();
                 self.ppu.borrow_mut().incr_address();
@@ -131,10 +143,16 @@ impl MemLocation for PPURegister<'_> {
             PPURegInt::Dma => {
                 unimplemented!()
             },
-        }
+        };
+
+        self.ppu.borrow_mut().last_value = result;
+
+        result
     }
 
     fn write(&mut self, value: u8) {
+        self.ppu.borrow_mut().last_value = value;
+
         match self.reg {
             PPURegInt::Ctrl => {
                 self.ppu.borrow_mut().ctrl.0 = value;

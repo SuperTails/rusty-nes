@@ -3,8 +3,6 @@ use sdl2::rect::Point;
 use super::SDLSystem;
 use crate::mapper::Mapped;
 use std::cell::RefCell;
-use std::num::Wrapping;
-use crate::Context;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct PalettedColor(pub u8);
@@ -118,6 +116,8 @@ pub struct PPU {
 
     pub mask: u8,
 
+    pub last_value: u8,
+
     /* TODO: Sprite zero hit, Sprite Overflow, Proper VBlank */
     pub status: RefCell<u8>,
 
@@ -148,6 +148,7 @@ impl PPU {
             scanline: 0,
             pixel: 0,
             mask: 0,
+            last_value: 0,
             status: RefCell::new(0),
             cycles: 0,
             address: RefCell::new(0),
@@ -443,12 +444,14 @@ impl PPU {
         for idx in 0..64 {
             let full_addr = (addr as u16) << 8 | (idx * 4);
 
+            let cpu = ctx.cpu.borrow();
+
             // TODO: Access properly
             self.oam.borrow_mut()[idx as usize] = OAMEntry {
-                y: ctx.native_ram.borrow()[(full_addr + 0) as usize],
-                index: ctx.native_ram.borrow()[(full_addr + 1) as usize],
-                attrs: OAMEntryAttrs(ctx.native_ram.borrow()[(full_addr + 2) as usize]),
-                x: ctx.native_ram.borrow()[(full_addr + 3) as usize],
+                y: cpu.ram[(full_addr + 0) as usize],
+                index: cpu.ram[(full_addr + 1) as usize],
+                attrs: OAMEntryAttrs(cpu.ram[(full_addr + 2) as usize]),
+                x: cpu.ram[(full_addr + 3) as usize],
             };
             
             /*if self.oam[idx as usize].y != 248 {

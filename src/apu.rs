@@ -2,7 +2,6 @@ pub struct APU {
     step_mode: bool,
     irq_inhibit: bool,
     cycle: usize,
-    frame_counter: u8,
 
     dmc_enable: bool,
     noise_enable: bool,
@@ -26,7 +25,6 @@ impl APU {
             step_mode: false,
             irq_inhibit: false,
             cycle: 0,
-            frame_counter: 0,
             dmc_enable: false,
             noise_enable: false,
             triangle_enable: false,

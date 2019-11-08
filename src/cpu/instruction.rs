@@ -1,7 +1,10 @@
+#![allow(non_snake_case)]
+
 use std::cmp::Ordering;
 use std::num::Wrapping;
 use crate::Context;
 use std::str::FromStr;
+use super::CPU;
 
 lazy_static! {
     pub static ref ARCH: [Option<Instruction>; 256] = instructions::gen_excs();
@@ -47,43 +50,45 @@ impl AddressingMode {
         }
     }
 
-    pub fn address(&self, ctx: &mut Context) -> Address {
+    pub fn address(&self, ctx: &Context, cpu: &CPU) -> Address {
+        let x = *cpu.x.borrow();
+        let y = *cpu.y.borrow();
         match self {
             AddressingMode::Impl => Address::Implied,
-            AddressingMode::Imm => Address::Immediate(ctx.read(ctx.pc + 1)),
+            AddressingMode::Imm => Address::Immediate(cpu.read(cpu.pc + 1, ctx)),
             AddressingMode::Zpg => {
-                Address::Addressed(ctx.read(ctx.pc + 1) as u16)
+                Address::Addressed(cpu.read(cpu.pc + 1, ctx) as u16)
             },
             AddressingMode::ZpgX => {
-                Address::Addressed((Wrapping(ctx.read(ctx.pc + 1)) + Wrapping(ctx.x)).0 as u16)
+                Address::Addressed(cpu.read(cpu.pc + 1, ctx).wrapping_add(x) as u16)
             },
             AddressingMode::ZpgY => {
-                Address::Addressed((Wrapping(ctx.read(ctx.pc + 1)) + Wrapping(ctx.y)).0 as u16)
+                Address::Addressed(cpu.read(cpu.pc + 1, ctx).wrapping_add(y) as u16)
             },
             AddressingMode::Ind => {
-                Address::Addressed(ctx.read_wide(ctx.pc + 1))
+                Address::Addressed(cpu.read_wide(cpu.pc + 1, ctx))
             },
             AddressingMode::XInd => {
-                let zpg_addr = ctx.read(ctx.pc + 1);
-                Address::Addressed(ctx.read_wide((Wrapping(zpg_addr) + Wrapping(ctx.x)).0 as u16))
+                let zpg_addr = cpu.read(cpu.pc + 1, ctx);
+                Address::Addressed(cpu.read_wide(zpg_addr.wrapping_add(x) as u16, ctx))
             },
             AddressingMode::Rel => {
-                Address::Immediate(ctx.read(ctx.pc + 1))
+                Address::Immediate(cpu.read(cpu.pc + 1, ctx))
             },
             AddressingMode::IndY => {
-                let zpg_addr = ctx.read(ctx.pc + 1);
-                let mut effective_addr = Wrapping(ctx.read_wide(zpg_addr as u16));
-                effective_addr += Wrapping(ctx.y as u16);
+                let zpg_addr = cpu.read(cpu.pc + 1, ctx);
+                let mut effective_addr = Wrapping(cpu.read_wide(zpg_addr as u16, ctx));
+                effective_addr += Wrapping(y as u16);
                 Address::Addressed(effective_addr.0)
             }
             AddressingMode::Abs => {
-                Address::Addressed(ctx.read_wide_nowrap(ctx.pc + 1))
+                Address::Addressed(cpu.read_wide_nowrap(cpu.pc + 1, ctx))
             },
             AddressingMode::AbsX => {
-                Address::Addressed((Wrapping(ctx.read_wide(ctx.pc + 1)) + Wrapping(ctx.x as u16)).0)
+                Address::Addressed(cpu.read_wide(cpu.pc + 1, ctx).wrapping_add(x as u16))
             },
             AddressingMode::AbsY => {
-                Address::Addressed((Wrapping(ctx.read_wide(ctx.pc + 1)) + Wrapping(ctx.y as u16)).0)
+                Address::Addressed(cpu.read_wide(cpu.pc + 1, ctx).wrapping_add(y as u16))
             },
         }
     }
@@ -112,17 +117,17 @@ impl FromStr for AddressingMode {
 }
 
 enum Operation {
-    Addressed(&'static (dyn Fn(&mut Context, u16) + Sync)),
-    Immediate(&'static (dyn Fn(&mut Context, u8) + Sync)),
-    Implied(&'static (dyn Fn(&mut Context) + Sync)),
+    Addressed(&'static (dyn Fn(&Context, &mut CPU, u16) + Sync)),
+    Immediate(&'static (dyn Fn(&Context, &mut CPU, u8) + Sync)),
+    Implied(&'static (dyn Fn(&Context, &mut CPU) + Sync)),
 }
 
 impl Operation {
-    pub fn run(&self, ctx: &mut Context, addr: &Address) {
+    pub fn run(&self, ctx: &Context, cpu: &mut CPU, addr: &Address) {
         match self {
             Operation::Addressed(f) => {
                 if let Address::Addressed(a) = addr {
-                    f(ctx, *a)
+                    f(ctx, cpu, *a)
                 }
                 else {
                     panic!()
@@ -130,7 +135,7 @@ impl Operation {
             },
             Operation::Immediate(f) => {
                 if let Address::Immediate(a) = addr {
-                    f(ctx, *a)
+                    f(ctx, cpu, *a)
                 }
                 else {
                     panic!()
@@ -138,7 +143,7 @@ impl Operation {
             },
             Operation::Implied(f) => {
                 if let Address::Implied = addr {
-                    f(ctx)
+                    f(ctx, cpu)
                 }
                 else {
                     panic!()
@@ -156,11 +161,12 @@ pub struct Instruction {
 }
 
 impl Instruction {
-    pub fn run(&self, ctx: &mut Context) -> usize {
-        let last_pc = ctx.pc;
+    pub fn run(&self, ctx: &Context, cpu: &mut CPU) -> usize {
+        let last_pc = cpu.pc;
 
-        let addr = self.mode.address(ctx);
-        self.operation.run(ctx, &addr);
+        let addr = self.mode.address(ctx, cpu);
+        
+        self.operation.run(ctx, cpu, &addr);
 
         let mut cycles = self.cycles as usize;
 
@@ -169,15 +175,15 @@ impl Instruction {
         // Check for page boundary crossings
         // if this is a branch instruction
         if self.mode == AddressingMode::Rel {
-            if ctx.pc >> 8 != last_pc >> 8 {
+            if cpu.pc >> 8 != last_pc >> 8 {
                 cycles += 1;
             }
-            else if ctx.pc != last_pc {
+            else if cpu.pc != last_pc {
                 cycles += 1;
             }
         }
         
-        ctx.pc += self.mode.len() as u16;
+        cpu.pc += self.mode.len() as u16;
 
         cycles
     }
@@ -187,7 +193,7 @@ macro_rules! raw_inst {
 	($v:ident $name:ident $val:tt $mode:literal $exc:expr) => (
 		assert!($v.insert(
             $val,
-            crate::Instruction {
+            crate::cpu::instruction::Instruction {
                 opcode: stringify!($name).to_string(),
                 cycles: 2,
                 mode: ($mode).parse().unwrap(),
@@ -198,7 +204,7 @@ macro_rules! raw_inst {
     ($v:ident $name:ident $val:tt $len:literal) => (
         assert!($v.insert(
                 $val,
-                crate::Instruction {
+                crate::cpu::instruction::Instruction {
                     opcode: stringify!($name).to_string(),
                     cycles: 2,
                     mode: ($mode).parse().unwrap()
@@ -285,7 +291,7 @@ macro_rules! inst_list {
                 let parsed = parse_instruction_list();
 
                 for (n, m, cycles) in parsed {
-                    let i = excs.iter_mut().find(|(_, instr)| instr.opcode == n && instr.mode == m).unwrap_or_else(|| panic!("Couldn't find {}, {:?}", n, m));
+                    let i = excs.iter_mut().find(|(_, instr): &(_, &mut Instruction)| instr.opcode == n && instr.mode == m).unwrap_or_else(|| panic!("Couldn't find {}, {:?}", n, m));
                     i.1.cycles = cycles;
                 }
 
@@ -351,266 +357,373 @@ fn parse_instruction_list() -> Vec<(String, AddressingMode, u8)> {
     result
 }
 
-fn BRANCH(ctx: &mut Context, offset: u8, cond: bool) {
+fn BRANCH(_: &Context, cpu: &mut CPU, offset: u8, cond: bool) {
     if cond { 
         let neg = offset >> 7 != 0;
         if neg {
-            ctx.pc -= (!offset + 1) as u16
+            cpu.pc -= (!offset + 1) as u16
         }
         else {
-            ctx.pc += offset as u16
+            cpu.pc += offset as u16
         }
     }
 }
 
-fn COMPARE(ctx: &mut Context, lhs: u8, rhs: u8) {
+fn COMPARE(_: &Context, cpu: &mut CPU, lhs: u8, rhs: u8) {
     let diff = (Wrapping(lhs) - Wrapping(rhs)).0;
     match lhs.cmp(&rhs) {
         Ordering::Less => {
-            ctx.set_neg(diff >> 7 != 0);
-            ctx.set_zero(false);
-            ctx.set_carry(false);
+            cpu.set_neg(diff >> 7 != 0);
+            cpu.set_zero(false);
+            cpu.set_carry(false);
         },
         Ordering::Equal => {
-            ctx.set_neg(false);
-            ctx.set_zero(true);
-            ctx.set_carry(true);
+            cpu.set_neg(false);
+            cpu.set_zero(true);
+            cpu.set_carry(true);
         },
         Ordering::Greater => {
-            ctx.set_neg(diff >> 7 != 0);
-            ctx.set_zero(false);
-            ctx.set_carry(true);
+            cpu.set_neg(diff >> 7 != 0);
+            cpu.set_zero(false);
+            cpu.set_carry(true);
         }
     }
 }
 
-fn ADC_imm(ctx: &mut Context, rhs: u8) {
-    let lhs = ctx.acc;
-    let res1 = lhs as u16 + rhs as u16 + ctx.get_carry() as u16;
+fn ADC_imm(_: &Context, cpu: &mut CPU, rhs: u8) {
+    let acc = *cpu.acc.borrow();
+    let res1 = acc as u16 + rhs as u16 + cpu.get_carry() as u16;
     let result = (res1 % 0x100) as u8;
     let did_carry = res1 & 0x100 != 0;
-    let did_overflow = (lhs ^ result) & (rhs ^ result) & 0x80 != 0;
-    ctx.update_flags(result);
-    ctx.set_carry(did_carry);
-    ctx.set_overflow(did_overflow);
-    ctx.acc = result;
+    let did_overflow = (acc ^ result) & (rhs ^ result) & 0x80 != 0;
+    cpu.update_flags(result);
+    cpu.set_carry(did_carry);
+    cpu.set_overflow(did_overflow);
+    *cpu.acc.borrow_mut() = result;
 }
 
-fn SUB(ctx: &mut Context, rhs: u8) {
-    let lhs = ctx.acc;
-    let res1 = lhs as u16 + (!rhs) as u16 + ctx.get_carry() as u16;
+fn SUB(_: &Context, cpu: &mut CPU, rhs: u8) {
+    let acc = *cpu.acc.borrow();
+    let res1 = acc as u16 + (!rhs) as u16 + cpu.get_carry() as u16;
     let result = (res1 % 0x100) as u8;
     let did_carry = res1 & 0x100 != 0;
-    let did_overflow = (lhs ^ result) & (!rhs ^ result) & 0x80 != 0;
-    ctx.update_flags(result);
-    ctx.set_carry(did_carry);
-    ctx.set_overflow(did_overflow);
-    ctx.acc = result;
+    let did_overflow = (acc ^ result) & (!rhs ^ result) & 0x80 != 0;
+    cpu.update_flags(result);
+    cpu.set_carry(did_carry);
+    cpu.set_overflow(did_overflow);
+    *cpu.acc.borrow_mut() = result;
 }
 
-fn ror(ctx: &mut Context, mut value: u8) -> u8 {
+fn ror(_: &Context, cpu: &mut CPU, mut value: u8) -> u8 {
     let carry_out = value & 1 != 0;
     value >>= 1;
-    value |= (ctx.get_carry() as u8) << 7;
-    ctx.update_flags(value);
-    ctx.set_carry(carry_out);
+    value |= (cpu.get_carry() as u8) << 7;
+    cpu.update_flags(value);
+    cpu.set_carry(carry_out);
     value
 }
 
-fn rol(ctx: &mut Context, mut value: u8) -> u8 {
+fn rol(_: &Context, cpu: &mut CPU, mut value: u8) -> u8 {
     let carry_out = value & 0x80 != 0;
     value <<= 1;
-    value |= ctx.get_carry() as u8;
-    ctx.update_flags(value);
-    ctx.set_carry(carry_out);
+    value |= cpu.get_carry() as u8;
+    cpu.update_flags(value);
+    cpu.set_carry(carry_out);
     value
 }
 
-fn lsr(ctx: &mut Context, mut value: u8) -> u8 {
+fn lsr(_: &Context, cpu: &mut CPU, mut value: u8) -> u8 {
     let carry = value & 1 != 0;
     value >>= 1;
-    ctx.update_flags(value);
-    ctx.set_carry(carry);
+    cpu.update_flags(value);
+    cpu.set_carry(carry);
     value
 }
 
-fn BIT(ctx: &mut Context, addr: u16) {
-    let value = ctx.read(addr);
-    ctx.set_neg(value & 0x80 != 0);
-    ctx.set_overflow(value & 0x40 != 0);
-    ctx.set_zero(ctx.acc & value == 0);
+fn BIT(ctx: &Context, cpu: &mut CPU, addr: u16) {
+    let value = cpu.read(addr, ctx);
+    cpu.set_neg(value & 0x80 != 0);
+    cpu.set_overflow(value & 0x40 != 0);
+    let acc = *cpu.acc.borrow();
+    cpu.set_zero(acc & value == 0);
 }
 
-fn AAX(ctx: &mut Context, addr: u16) {
-    let result = ctx.acc & ctx.x;
-    ctx.write(addr, result);
+fn AAX(ctx: &Context, cpu: &mut CPU, addr: u16) {
+    let result = *cpu.acc.borrow() & *cpu.x.borrow();
+    cpu.write(addr, result, ctx);
 }
 
-fn DCP(ctx: &mut Context, addr: u16) {
-    let v = (Wrapping(ctx.read(addr)) - Wrapping(1)).0;
-    ctx.write(addr, v);
-    COMPARE(ctx, ctx.acc, v);
+fn DCP(ctx: &Context, cpu: &mut CPU, addr: u16) {
+    let v = (Wrapping(cpu.read(addr, ctx)) - Wrapping(1)).0;
+    cpu.write(addr, v, ctx);
+    let acc = *cpu.acc.borrow();
+    COMPARE(ctx, cpu, acc, v);
 }
 
-fn ISC(ctx: &mut Context, addr: u16) {
-    let v = (Wrapping(ctx.read(addr)) + Wrapping(1)).0;
-    ctx.write(addr, v);
-    SUB(ctx, v);
+fn ISC(ctx: &Context, cpu: &mut CPU, addr: u16) {
+    let v = (Wrapping(cpu.read(addr, ctx)) + Wrapping(1)).0;
+    cpu.write(addr, v, ctx);
+    SUB(ctx, cpu, v);
 }
 
-fn SLO(ctx: &mut Context, addr: u16) {
-    let mut m = ctx.read(addr);
+fn SLO(ctx: &Context, cpu: &mut CPU, addr: u16) {
+    let mut m = cpu.read(addr, ctx);
     let c = m >> 7;
     m <<= 1;
-    ctx.write(addr, m); 
-    ctx.acc |= m;
-    ctx.update_flags(ctx.acc);
-    ctx.set_carry(c != 0);
+    cpu.write(addr, m, ctx); 
+    let mut acc = *cpu.acc.borrow_mut();
+    acc |= m;
+    cpu.update_flags(acc);
+    cpu.set_carry(c != 0);
+    *cpu.acc.borrow_mut() = acc;
 }
 
-fn RLA(ctx: &mut Context, addr: u16) {
-    let v = ctx.read(addr);
-    let result = rol(ctx, v);
-    ctx.write(addr, result);
-    ctx.acc &= result;
-    ctx.update_flags(ctx.acc);
+fn RLA(ctx: &Context, cpu: &mut CPU,  addr: u16) {
+    let v = cpu.read(addr, ctx);
+    let result = rol(ctx, cpu, v);
+    cpu.write(addr, result, ctx);
+    let mut acc = *cpu.acc.borrow();
+    acc &= result;
+    cpu.update_flags(acc);
+    *cpu.acc.borrow_mut() = acc;
 }
 
-fn SRE(ctx: &mut Context, addr: u16) {
-    let mut m = ctx.read(addr);
+fn SRE(ctx: &Context, cpu: &mut CPU, addr: u16) {
+    let mut m = cpu.read(addr, ctx);
     let carry = m & 1 != 0;
     m >>= 1;
-    ctx.write(addr, m);
-    ctx.set_carry(carry);
-    ctx.acc ^= m;
-    ctx.update_flags(ctx.acc);
+    cpu.write(addr, m, ctx);
+    cpu.set_carry(carry);
+
+    let mut acc = *cpu.acc.borrow();
+    acc ^= m;
+    cpu.update_flags(acc);
+    *cpu.acc.borrow_mut() = acc;
 }
 
-fn RRA(ctx: &mut Context, addr: u16) {
-    let read = ctx.read(addr);
-    let result = ror(ctx, read);
-    ctx.write(addr, result);
-    ADC_imm(ctx, result);
+fn RRA(ctx: &Context, cpu: &mut CPU, addr: u16) {
+    let read = cpu.read(addr, ctx);
+    let result = ror(ctx, cpu, read);
+    cpu.write(addr, result, ctx);
+    ADC_imm(ctx, cpu, result);
 }
 
-fn asl(ctx: &mut Context, mut val: u8) -> u8 {
+fn asl(_: &Context, cpu: &mut CPU, mut val: u8) -> u8 {
     let c = val >> 7 != 0;
     val <<= 1;
-    ctx.update_flags(val);
-    ctx.set_carry(c);
+    cpu.update_flags(val);
+    cpu.set_carry(c);
     val
 }
 
-fn BPL(ctx: &mut Context, offset: u8) {
-    BRANCH(ctx, offset, !ctx.get_neg())
+fn RTI(_: &Context, cpu: &mut CPU) {
+    *cpu.status.borrow_mut() = (cpu.pop() & !(0b01 << 4)) | 0b10 << 4;
+    cpu.pc = cpu.pop() as u16;
+    cpu.pc |= (cpu.pop() as u16) << 8;
+    cpu.pc -= 1;
 }
-fn BMI(ctx: &mut Context, offset: u8) {
-    BRANCH(ctx, offset,  ctx.get_neg())
+fn JSR(_: &Context, cpu: &mut CPU, addr: u16) {
+    let pc = cpu.pc;
+    cpu.push(((pc + 2) >> 8) as u8);
+    cpu.push(((pc + 2) & 0xFF) as u8);
+    cpu.pc = addr - 3;
 }
-fn BVC(ctx: &mut Context, offset: u8) {
-    BRANCH(ctx, offset, !ctx.get_overflow());
+fn RTS(_: &Context, cpu: &mut CPU) {
+    let lo = cpu.pop() as u16;
+    let hi = cpu.pop() as u16;
+    cpu.pc = hi << 8 | lo;
 }
-fn BVS(ctx: &mut Context, offset: u8) {
-    BRANCH(ctx, offset,  ctx.get_overflow());
+
+macro_rules! make_branch_func {
+    ($truename:ident, $falsename:ident, $cond:ident) => {
+        fn $truename(ctx: &Context, cpu: &mut CPU, offset: u8) {
+            BRANCH(ctx, cpu, offset, cpu.$cond())
+        }
+
+        fn $falsename(ctx: &Context, cpu: &mut CPU, offset: u8) {
+            BRANCH(ctx, cpu, offset, !cpu.$cond())
+        }
+    };
 }
-fn BCC(ctx: &mut Context, offset: u8) {
-    BRANCH(ctx, offset, !ctx.get_carry());
+
+make_branch_func!(BEQ, BNE, get_zero);
+make_branch_func!(BMI, BPL, get_neg);
+make_branch_func!(BVS, BVC, get_overflow);
+make_branch_func!(BCS, BCC, get_carry);
+
+macro_rules! make_arith_func {
+    ($name:ident, $name2:ident, $op:tt) => {
+        fn $name(_: &Context, cpu: &mut CPU, imm: u8) { 
+            let mut result = *cpu.acc.borrow();
+            result $op imm;
+            cpu.update_flags(result);
+            *cpu.acc.borrow_mut() = result;
+        }
+
+        fn $name2(ctx: &Context, cpu: &mut CPU, addr: u16) {
+            let value = cpu.read(addr, ctx);
+            $name(ctx, cpu, value)
+        }
+    };
 }
-fn BCS(ctx: &mut Context, offset: u8) {
-    BRANCH(ctx, offset,  ctx.get_carry());
+
+make_arith_func!(ORA_imm, ORA, |=);
+make_arith_func!(AND_imm, AND, &=);
+make_arith_func!(EOR_imm, EOR, ^=);
+
+macro_rules! make_trans_func {
+    ($name:ident, $lhs:ident, $rhs:ident) => {
+        fn $name(_: &Context, cpu: &mut CPU) {
+            let value = *cpu.$rhs.borrow();
+            *cpu.$lhs.borrow_mut() = value;
+            cpu.update_flags(value);
+        }
+    };
 }
-fn RTI(ctx: &mut Context) {
-    ctx.status = (ctx.pop() & !(0b01 << 4)) | 0b10 << 4;
-    ctx.pc = ctx.pop() as u16;
-    ctx.pc |= (ctx.pop() as u16) << 8;
-    ctx.pc -= 1;
+
+make_trans_func!(TYA, acc, y);
+make_trans_func!(TXA, acc, x);
+make_trans_func!(TAY, y, acc);
+make_trans_func!(TAX, x, acc);
+make_trans_func!(TSX, x, sp);
+
+fn TXS(_: &Context, cpu: &mut CPU) {
+    *cpu.sp.borrow_mut() = *cpu.x.borrow();
 }
-fn JSR(ctx: &mut Context, addr: u16) {
-    ctx.push(((ctx.pc + 2) >> 8) as u8);
-    ctx.push(((ctx.pc + 2) & 0xFF) as u8);
-    ctx.pc = addr - 3;
+
+fn SBC(ctx: &Context, cpu: &mut CPU, addr: u16) { let v = cpu.read(addr, ctx); SBC_imm(ctx, cpu, v) }
+fn SBC_imm(ctx: &Context, cpu: &mut CPU, imm: u8) { SUB(ctx, cpu, imm); }
+fn ADC(ctx: &Context, cpu: &mut CPU, addr: u16) { let v = cpu.read(addr, ctx); ADC_imm(ctx, cpu, v); }
+
+fn LAX(ctx: &Context, cpu: &mut CPU, addr: u16) { LDA(ctx, cpu, addr); TAX(ctx, cpu); }
+
+macro_rules! make_compare {
+    ($name:ident, $name2:ident, $reg:ident) => {
+        fn $name(ctx: &Context, cpu: &mut CPU, imm: u8) {
+            let val = *cpu.$reg.borrow();
+            COMPARE(ctx, cpu, val, imm);
+        }
+
+        fn $name2(ctx: &Context, cpu: &mut CPU, addr: u16) {
+            let val = cpu.read(addr, ctx);
+            $name(ctx, cpu, val);
+        }
+    };
 }
-fn RTS(ctx: &mut crate::Context) {
-    let lo = ctx.pop() as u16;
-    let hi = ctx.pop() as u16;
-    ctx.pc = hi << 8 | lo;
+
+make_compare!(CMP_imm, CMP, acc);
+make_compare!(CPX_imm, CPX, x);
+make_compare!(CPY_imm, CPY, y);
+
+macro_rules! make_shift {
+    ($name:ident, $name2:ident, $func:ident) => {
+        fn $name(ctx: &Context, cpu: &mut CPU) {
+            let value = *cpu.acc.borrow();
+            let result = $func(ctx, cpu, value);
+            *cpu.acc.borrow_mut() = result;
+        }
+
+        fn $name2(ctx: &Context, cpu: &mut CPU, addr: u16) {
+            let value = cpu.read(addr, ctx);
+            let result = $func(ctx, cpu, value);
+            cpu.write(addr, result, ctx);
+        }
+    };
 }
-fn LDY_imm(ctx: &mut Context, imm: u8) { ctx.y = imm; ctx.update_flags(ctx.y); }
-fn CPY_imm(ctx: &mut Context, imm: u8) { COMPARE(ctx, ctx.y, imm) }
-fn BNE(ctx: &mut Context, offset: u8) { BRANCH(ctx, offset, !ctx.get_zero()) }
-fn CPX_imm(ctx: &mut Context, imm: u8) { COMPARE(ctx, ctx.x, imm) }
-fn BEQ(ctx: &mut Context, offset: u8) { BRANCH(ctx, offset,  ctx.get_zero()) }
 
-fn ORA(ctx: &mut Context, addr: u16) { let v = ctx.read(addr); ORA_imm(ctx, v) }
-fn ORA_imm(ctx: &mut Context, imm: u8) { ctx.acc |= imm; ctx.update_flags(ctx.acc); }
-fn AND(ctx: &mut Context, addr: u16) { let v = ctx.read(addr); AND_imm(ctx, v) }
-fn AND_imm(ctx: &mut Context, imm: u8) { ctx.acc &= imm; ctx.update_flags(ctx.acc); }
-fn EOR(ctx: &mut Context, addr: u16) { let v = ctx.read(addr); EOR_imm(ctx, v) }
-fn EOR_imm(ctx: &mut Context, imm: u8) { ctx.acc ^= imm; ctx.update_flags(ctx.acc); }
-fn LDA(ctx: &mut Context, addr: u16) { let v = ctx.read(addr); LDA_imm(ctx, v) }
-fn LDA_imm(ctx: &mut Context, imm: u8) { ctx.acc = imm; ctx.update_flags(ctx.acc); }
-fn CMP(ctx: &mut Context, addr: u16) { let v = ctx.read(addr); CMP_imm(ctx, v) }
-fn CMP_imm(ctx: &mut Context, imm: u8) { COMPARE(ctx, ctx.acc, imm); }
-fn SBC(ctx: &mut Context, addr: u16) { let v = ctx.read(addr); SBC_imm(ctx, v) }
-fn SBC_imm(ctx: &mut Context, imm: u8) { SUB(ctx, imm); }
-fn ADC(ctx: &mut Context, addr: u16) { let v = ctx.read(addr); ADC_imm(ctx, v); }
-fn STA(ctx: &mut Context, addr: u16) { ctx.write(addr, ctx.acc); }
+make_shift!(ASL_imp, ASL, asl);
+make_shift!(ROL_imp, ROL, rol);
+make_shift!(LSR_imp, LSR, lsr);
+make_shift!(ROR_imp, ROR, ror);
 
-fn LDX_imm(ctx: &mut Context, imm: u8) { ctx.x = imm; ctx.update_flags(ctx.x); }
+macro_rules! make_load_store {
+    ($loadname_imm:ident, $loadname:ident, $storename:ident, $reg:ident) => {
+        fn $loadname_imm(_: &Context, cpu: &mut CPU, imm: u8) {
+            cpu.update_flags(imm);
+            *cpu.$reg.borrow_mut() = imm;
+        }
 
-fn LAX(ctx: &mut Context, addr: u16) { ctx.acc = ctx.read(addr); ctx.x = ctx.acc; ctx.update_flags(ctx.x); }
+        fn $loadname(ctx: &Context, cpu: &mut CPU, addr: u16) {
+            let value = cpu.read(addr, ctx);
+            $loadname_imm(ctx, cpu, value)
+        }
 
-fn STY(ctx: &mut Context, addr: u16) { ctx.write(addr, ctx.y); }
-fn LDY(ctx: &mut Context, addr: u16) { ctx.y = ctx.read(addr); ctx.update_flags(ctx.y); }
-fn TYA(ctx: &mut Context) { ctx.acc = ctx.y; ctx.update_flags(ctx.acc); }
-fn TXA(ctx: &mut Context) { ctx.acc = ctx.x; ctx.update_flags(ctx.acc); }
-fn TAY(ctx: &mut Context) { ctx.y = ctx.acc; ctx.update_flags(ctx.y); }
-fn TAX(ctx: &mut Context) { ctx.x = ctx.acc; ctx.update_flags(ctx.x); }
-fn TSX(ctx: &mut Context) { ctx.x = ctx.sp; ctx.update_flags(ctx.x); }
-fn TXS(ctx: &mut Context) { ctx.sp = ctx.x; }
+        fn $storename(ctx: &Context, cpu: &mut CPU, addr: u16) {
+            let value = *cpu.$reg.borrow();
+            cpu.write(addr, value, ctx);
+        }
+    };
+}
 
-fn CPY(ctx: &mut Context, addr: u16) { let v = ctx.read(addr); COMPARE(ctx, ctx.y, v); }
-fn CPX(ctx: &mut Context, addr: u16) { let v = ctx.read(addr); COMPARE(ctx, ctx.x, v); }
+make_load_store!(LDA_imm, LDA, STA, acc);
+make_load_store!(LDX_imm, LDX, STX, x);
+make_load_store!(LDY_imm, LDY, STY, y);
 
-fn ASL(ctx: &mut Context, addr: u16) { let v = ctx.read(addr); let val = asl(ctx, v); ctx.write(addr, val); }
-fn ASL_imp(ctx: &mut Context) { ctx.acc = asl(ctx, ctx.acc); }
-fn ROL(ctx: &mut Context, addr: u16) { let v = ctx.read(addr); let val = rol(ctx, v); ctx.write(addr, val); }
-fn ROL_imp(ctx: &mut Context) { ctx.acc = rol(ctx, ctx.acc); }
-fn LSR(ctx: &mut Context, addr: u16) { let v = ctx.read(addr); let val = lsr(ctx, v); ctx.write(addr, val); }
-fn LSR_imp(ctx: &mut Context) { ctx.acc = lsr(ctx, ctx.acc); }
-fn ROR(ctx: &mut Context, addr: u16) { let v = ctx.read(addr); let val = ror(ctx, v); ctx.write(addr, val); }
-fn ROR_imp(ctx: &mut Context) { ctx.acc = ror(ctx, ctx.acc); }
+fn DEC(ctx: &Context, cpu: &mut CPU, addr: u16) { let v = (Wrapping(cpu.read(addr, ctx)) - Wrapping(1)).0; cpu.write(addr, v, ctx); cpu.update_flags(v); }
+fn INC(ctx: &Context, cpu: &mut CPU, addr: u16) { let v = (Wrapping(cpu.read(addr, ctx)) + Wrapping(1)).0; cpu.write(addr, v, ctx); cpu.update_flags(v); }
 
-fn STX(ctx: &mut Context, addr: u16) { ctx.write(addr, ctx.x); }
-fn LDX(ctx: &mut Context, addr: u16) { ctx.x = ctx.read(addr); ctx.update_flags(ctx.x) }
+macro_rules! make_inc_dec {
+    ($decname:ident, $incname:ident, $reg:ident) => {
+        fn $decname(_: &Context, cpu: &mut CPU) {
+            let result = (Wrapping(*cpu.$reg.borrow()) - Wrapping(1)).0;
+            cpu.update_flags(result);
+            *cpu.$reg.borrow_mut() = result;
+        }
 
-fn DEC(ctx: &mut Context, addr: u16) { let v = (Wrapping(ctx.read(addr)) - Wrapping(1)).0; ctx.write(addr, v); ctx.update_flags(v); }
-fn INC(ctx: &mut Context, addr: u16) { let v = (Wrapping(ctx.read(addr)) + Wrapping(1)).0; ctx.write(addr, v); ctx.update_flags(v); }
-fn DEY(ctx: &mut Context) { ctx.y = (Wrapping(ctx.y) - Wrapping(1)).0; ctx.update_flags(ctx.y); }
-fn INY(ctx: &mut Context) { ctx.y = (Wrapping(ctx.y) + Wrapping(1)).0; ctx.update_flags(ctx.y); }
-fn INX(ctx: &mut Context) { ctx.x = (Wrapping(ctx.x) + Wrapping(1)).0; ctx.update_flags(ctx.x); }
-fn DEX(ctx: &mut Context) { ctx.x = (Wrapping(ctx.x) - Wrapping(1)).0; ctx.update_flags(ctx.x); }
+        fn $incname(_: &Context, cpu: &mut CPU) {
+            let result = (Wrapping(*cpu.$reg.borrow()) + Wrapping(1)).0;
+            cpu.update_flags(result);
+            *cpu.$reg.borrow_mut() = result;
+        }
+    };
+}
 
-fn PHP(ctx: &mut Context) { ctx.push(ctx.status | (0b11 << 4)) }
-fn PLP(ctx: &mut Context) { ctx.status = (ctx.pop() & !(0b01 << 4)) | (0b10 << 4); }
-fn PHA(ctx: &mut Context) { ctx.push(ctx.acc); }
-fn PLA(ctx: &mut Context) { ctx.acc = ctx.pop(); ctx.update_flags(ctx.acc); }
+make_inc_dec!(DEX, INX, x);
+make_inc_dec!(DEY, INY, y);
 
-fn CLC(ctx: &mut Context) { ctx.set_carry(false); }
-fn SEC(ctx: &mut Context) { ctx.set_carry(true); }
-fn CLI(ctx: &mut Context) { ctx.status &= !(1 << 2); }
-fn SEI(ctx: &mut Context) { ctx.status |= (1 << 2); }
-fn CLV(ctx: &mut Context) { ctx.set_overflow(false); }
-fn CLD(ctx: &mut Context) { ctx.status &= !(1 << 3); }
-fn SED(ctx: &mut Context) { ctx.status |= 1 << 3; }
+fn PHP(_: &Context, cpu: &mut CPU) {
+    let status = *cpu.status.borrow() | (0b11 << 4);
+    cpu.push(status)
+}
+fn PLP(_: &Context, cpu: &mut CPU) {
+    let status = (cpu.pop() & !(0b01 << 4)) | (0b10 << 4);
+    *cpu.status.borrow_mut() = status;
+}
 
-fn JMP_abs(ctx: &mut crate::Context, addr: u16) { ctx.pc = addr - 3; }
-fn JMP_ind(ctx: &mut crate::Context, addr: u16) { ctx.pc = ctx.read_wide(addr) - 3; }
+fn PHA(_: &Context, cpu: &mut CPU) {
+    let acc = *cpu.acc.borrow();
+    cpu.push(acc);
+}
+fn PLA(_: &Context, cpu: &mut CPU) {
+    let value = cpu.pop();
+    cpu.update_flags(value);
+    *cpu.acc.borrow_mut() = value;
+}
 
-fn NOP(_: &mut Context) {}
-fn DOP_IMM(_: &mut Context, _: u8) {}
-fn DOP(_: &mut Context, _: u16) {}
-fn TOP_ADDR(_: &mut Context, _: u16) {}
+macro_rules! make_flag_setter {
+    ($setflag:ident, $clearflag:ident, $setter_name:ident) => {
+        fn $setflag(_: &Context, cpu: &mut CPU) {
+            cpu.$setter_name(true);
+        }
+
+        fn $clearflag(_: &Context, cpu: &mut CPU) {
+            cpu.$setter_name(false);
+        }
+    };
+}
+
+make_flag_setter!(SEC, CLC, set_carry);
+make_flag_setter!(SEI, CLI, set_interrupt);
+make_flag_setter!(_SEV, CLV, set_overflow);
+make_flag_setter!(SED, CLD, set_decimal);
+
+fn JMP_abs(_: &Context, cpu: &mut CPU, addr: u16) { cpu.pc = addr - 3; }
+fn JMP_ind(ctx: &Context, cpu: &mut CPU, addr: u16) { cpu.pc = cpu.read_wide(addr, ctx) - 3; }
+
+fn NOP(_: &Context, _: &mut CPU) {}
+fn DOP_IMM(_: &Context, _: &mut CPU, _: u8) {}
+fn DOP(_: &Context, _: &mut CPU, _: u16) {}
+fn TOP_ADDR(_: &Context, _: &mut CPU, _: u16) {}
 
 inst_list! {
     { BRK 0x00 &NOP }

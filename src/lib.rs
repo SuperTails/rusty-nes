@@ -1,5 +1,4 @@
-#![feature(bool_to_option)]
-
+#![feature(bool_to_option)] 
 // TODO: Figure out why I still need
 #![allow(unused_parens)]
 
@@ -16,11 +15,11 @@ extern crate arrayvec;
 extern crate sdl2;
 
 pub mod rom;
+pub mod cpu;
 pub mod ppu;
 pub mod apu;
 pub mod controller;
 pub mod mapper;
-pub mod instruction;
 mod mem_location;
 
 use mem_location::*;
@@ -28,10 +27,9 @@ use mem_location::*;
 use rom::Rom;
 use ppu::PPU;
 use apu::APU;
+use cpu::CPU;
 use controller::Controller;
 use std::cell::RefCell;
-use std::num::Wrapping;
-use instruction::Instruction;
 use sdl2::keyboard::Keycode;
 use sdl2::event::Event;
 use sdl2::{Sdl, VideoSubsystem, EventPump};
@@ -72,24 +70,10 @@ impl Config {
     }
 }
 
-pub enum State {
-    Reset,
-    Irq,
-    Nmi,
-    Run,
-}
-
 pub struct Context {
-	pub status: u8,
-	pub pc: u16,
-	pub acc: u8,
-	pub x: u8,
-	pub y: u8,
-	pub sp: u8,
-    pub native_ram: RefCell<Vec<u8>>,
-    pub state: State,
     pub ppu: RefCell<PPU>,
     pub apu: RefCell<APU>,
+    pub cpu: RefCell<CPU>,
     pub controller: RefCell<Controller>,
     pub sdl_system: SDLSystem,
     pub mapper: Box<dyn Mapped>,
@@ -119,15 +103,8 @@ impl From<Rom> for Context {
             ppu,
             hit_breakpoint: false,
             mapper,
-			status: 0,
-			pc: 0xFFFC,
-			acc: 0,
-			x: 0,
-			y: 0,
-			sp: 0,
             cycle: 0,
-            state: State::Reset,
-            native_ram: RefCell::new([0; 0x800].to_vec()),
+            cpu: RefCell::new(CPU::new()),
             apu: RefCell::new(APU::new()),
             controller: RefCell::new(Controller::new()),
             sdl_system: SDLSystem::new(),
@@ -164,20 +141,9 @@ impl SDLSystem {
 
 
 impl Context {
-    pub fn push(&mut self, value: u8) {
-        self.write(0x0100 + self.sp as u16, value);
-        self.sp = (Wrapping(self.sp) - Wrapping(1)).0;
-    }
-
-    pub fn pop(&mut self) -> u8 {
-        self.sp = (Wrapping(self.sp) + Wrapping(1)).0;
-        let res = self.read(0x0100 + self.sp as u16);
-        res
-    }
-
     pub fn cpu_address<'a>(&'a self, addr: u16) -> Box<dyn MemLocation + 'a> {
         match addr {
-            0x0000..=0x1FFF => Box::new(RamLocation { mem: &self.native_ram, addr: (addr % 0x0800) }),
+            0x0000..=0x1FFF => Box::new(CPURamLoc { cpu: &self.cpu, addr: (addr % 0x0800) }),
             0x2000..=0x3FFF => Box::new(PPURegister { context: self, ppu: &self.ppu, reg: PPURegInt::from_usize(((addr - 0x2000) % 0x8) as usize).unwrap() }),
             0x4000..=0x4013 => Box::new(APURegister { apu: &self.apu, register: (addr - 0x4000) as usize }),
             0x4014..=0x4014 => Box::new(PPURegister { context: self, ppu: &self.ppu, reg: PPURegInt::from_u8(14).unwrap() }),
@@ -225,100 +191,9 @@ impl Context {
         self.cpu_address(addr).read()
     }
 
-    pub fn write(&mut self, addr: u16, value: u8) {
+    pub fn write(&self, addr: u16, value: u8) {
         self.cpu_address(addr).write(value)
     }
-
-    pub fn read_wide_nowrap(&mut self, addr: u16) -> u16 {
-        (self.read(addr + 1) as u16) << 8 | self.read(addr) as u16
-    }
-
-    pub fn read_wide(&mut self, addr: u16) -> u16 {
-        let page = addr & 0xFF00;
-        let idx = (Wrapping((addr & 0xFF) as u8) + Wrapping(1)).0 as u16;
-        let addr_next = page | idx;
-        (self.read(addr_next) as u16) << 8 | self.read(addr) as u16
-    }
-
-    fn set_status(&mut self, v: bool, b: u8) {
-        assert!(b < 8);
-        self.status &= !(1 << b);
-        self.status |= (v as u8) << b;
-    }
-
-    fn get_status(&self, b: u8) -> bool {
-        (self.status >> b) & 1 != 0
-    }
-
-	pub fn set_neg(&mut self, v: bool) {
-        self.set_status(v, 7);
-	}
-
-    pub fn get_neg(&self) -> bool {
-        self.get_status(7)
-    }
-
-    pub fn set_overflow(&mut self, v: bool) {
-        self.set_status(v, 6);
-    }
-
-    pub fn get_overflow(&self) -> bool {
-        self.get_status(6)
-    }
-
-    pub fn set_carry(&mut self, v: bool) {
-        self.set_status(v, 0);
-    }
-
-    pub fn get_carry(&self) -> bool {
-        self.get_status(0)
-    }
-
-    pub fn set_zero(&mut self, v: bool) {
-        self.set_status(v, 1);
-    }
-
-    pub fn get_zero(&self) -> bool {
-        self.get_status(1)
-    }
-
-    pub fn update_flags(&mut self, value: u8) {
-        self.set_neg(value & (1 << 7) != 0);
-        self.set_zero(value == 0);
-    }
-
-    pub fn trigger_nmi(&mut self) {
-        self.push((self.pc >> 8) as u8);
-        self.push((self.pc & 0xFF) as u8);
-        self.push(self.status | 0b10 << 4);
-
-        // Disable interrupts
-        self.status |= 0b100;
-
-        self.pc = (self.read(0xFFFB) as u16) << 8 | self.read(0xFFFA) as u16;
-        self.state = State::Nmi;
-        
-        let i = self.read(self.pc);
-        println!("NMI triggered, PC is now {:#06X} ({:#04X})", self.pc, i);
-    }
-
-	pub fn try_irq(&mut self) -> bool {
-		if self.status & 0b100 != 0 {
-			return false;
-		}
-
-        self.push((self.pc >> 8) as u8);
-        self.push((self.pc & 0xFF) as u8);
-        self.push(self.status | 0b10 << 4);
-
-        // Disable interrupts
-        self.status |= 0b100;
-
-        self.pc = (self.read(0xFFFF) as u16) << 8 | self.read(0xFFFE) as u16;
-        self.state = State::Irq;
-
-        true
-	}
 
     pub fn next(&mut self) {
         let mut key_events = Vec::new();
@@ -345,56 +220,16 @@ impl Context {
         self.controller.borrow_mut().update_from_keys(&key_events);
 
         if !self.hit_breakpoint || should_run { 
-            let cycles = 
-            match self.state {
-                State::Reset => {
-                    self.pc = (self.read(self.pc + 1) as u16) << 8 | self.read(self.pc) as u16;
-                    println!("Reset vector was {:#06X}", self.pc);
-                    self.state = State::Run;
-                    1
-                },
-                State::Irq | 
-                State::Nmi |
-                State::Run => {
-                    let id = self.read(self.pc);
-                    let instr = instruction::ARCH[id as usize].as_ref().unwrap_or_else(|| {self.print_stack(); panic!("Instruction {:#04X} does not exist", id) });
-
-                    // TODO: Fix this
-                    if id == 0x00 && self.try_irq() {
-                        1
-                    }
-                    else {
-                        //self.print_instr(instr);
-                        instr.run(self)
-                    }
-                },
-            };
-
-            self.cycle += cycles as usize;
+            let cycles = self.cpu.borrow_mut().next(self);
+            self.cycle += cycles;
 
             /* TODO: Actually count the number of cycles properly */
             self.ppu.borrow_mut().next(cycles as usize, &mut self.sdl_system, &mut (*self.mapper));
 
             if self.ppu.borrow_mut().nmi_falling() {
-                self.trigger_nmi();
+                self.cpu.borrow_mut().trigger_nmi(self);
             }
         }
-    }
-
-    fn print_instr(&mut self, instr: &Instruction) {
-        print!("[PC: {:#06X}] A:{:02X} X:{:02X} Y:{:02X} P:{:02X} SP:{:02X} {} {: >4?}:", self.pc, self.acc, self.x, self.y, self.status, self.sp, instr.opcode, instr.mode);
-        for i in 0..instr.mode.len() {
-            print!("{:#04X} ", self.read(self.pc + i as u16));
-        }
-        println!("");
-    }
-
-    fn print_stack(&mut self) {
-        println!("SP: {:#04X}, Stack:", self.sp);
-        for i in self.sp..=255 {
-            println!("{:#04X}: {:#04X}", i, self.read(i as u16));
-        }
-        println!("Error code (If testing): {:#04X}, {:#04X}", self.read(2), self.read(3));
     }
 }
 

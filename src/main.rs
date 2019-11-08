@@ -1,10 +1,9 @@
 extern crate nes;
 
 use nes::rom::Rom;
-use nes::instruction::instructions;
+use std::cell::RefCell;
 use nes::Config;
 use nes::Context;
-use std::path::Path;
 
 const VERIFY: bool = false;
 
@@ -27,16 +26,24 @@ fn main() {
     let mut ctx = Context::from(rom);
 
     if VERIFY {
-        ctx.pc = 0xC000;
-        ctx.sp = 0xFD;
-        ctx.state = nes::State::Run;
-        ctx.status = 0x24;
-        ctx.cycle = 7;
+        {
+            let mut cpu = ctx.cpu.borrow_mut();
+            cpu.pc = 0xC000;
+            cpu.sp = RefCell::new(0xFD);
+            cpu.state = nes::cpu::State::Run;
+            cpu.status = RefCell::new(0x24);
+            ctx.cycle = 7;
+        }
+
         let expected: Vec<_> = std::fs::read_to_string("./nestest.log").unwrap().lines().map(parse_log_line).collect();
 
         for i in 0.. {
             /* Program Counter, Acc, X, Y, Status, Stack Pointer */
-            let actual = (ctx.pc, ctx.acc, ctx.x, ctx.y, ctx.status, ctx.sp, ctx.cycle);
+            let actual = {
+                let cpu = ctx.cpu.borrow();
+                let val = (cpu.pc, *cpu.acc.borrow(), *cpu.x.borrow(), *cpu.y.borrow(), *cpu.status.borrow(), *cpu.sp.borrow(), ctx.cycle);
+                val
+            };
             assert_eq!(expected[i], actual);
             ctx.next();
         }
