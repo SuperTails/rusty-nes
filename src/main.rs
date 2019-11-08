@@ -1,7 +1,6 @@
 extern crate nes;
 
 use nes::rom::Rom;
-use std::cell::RefCell;
 use nes::Config;
 use nes::Context;
 
@@ -29,9 +28,9 @@ fn main() {
         {
             let mut cpu = ctx.cpu.borrow_mut();
             cpu.pc = 0xC000;
-            cpu.sp = RefCell::new(0xFD);
+            cpu.sp = 0xFD;
             cpu.state = nes::cpu::State::Run;
-            cpu.status = RefCell::new(0x24);
+            cpu.status = 0x24;
             ctx.cycle = 7;
         }
 
@@ -41,7 +40,7 @@ fn main() {
             /* Program Counter, Acc, X, Y, Status, Stack Pointer */
             let actual = {
                 let cpu = ctx.cpu.borrow();
-                let val = (cpu.pc, *cpu.acc.borrow(), *cpu.x.borrow(), *cpu.y.borrow(), *cpu.status.borrow(), *cpu.sp.borrow(), ctx.cycle);
+                let val = (cpu.pc, cpu.acc, cpu.x, cpu.y, cpu.status, cpu.sp, ctx.cycle);
                 val
             };
             assert_eq!(expected[i], actual);

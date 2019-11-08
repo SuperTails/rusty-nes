@@ -51,8 +51,6 @@ impl AddressingMode {
     }
 
     pub fn address(&self, ctx: &Context, cpu: &CPU) -> (Address, usize) {
-        let x = *cpu.x.borrow();
-        let y = *cpu.y.borrow();
         match self {
             AddressingMode::Impl => (Address::Implied, 0),
             AddressingMode::Imm => (Address::Immediate(cpu.read(cpu.pc + 1, ctx)), 0),
@@ -60,17 +58,17 @@ impl AddressingMode {
                 (Address::Addressed(cpu.read(cpu.pc + 1, ctx) as u16), 0)
             },
             AddressingMode::ZpgX => {
-                (Address::Addressed(cpu.read(cpu.pc + 1, ctx).wrapping_add(x) as u16), 0)
+                (Address::Addressed(cpu.read(cpu.pc + 1, ctx).wrapping_add(cpu.x) as u16), 0)
             },
             AddressingMode::ZpgY => {
-                (Address::Addressed(cpu.read(cpu.pc + 1, ctx).wrapping_add(y) as u16), 0)
+                (Address::Addressed(cpu.read(cpu.pc + 1, ctx).wrapping_add(cpu.y) as u16), 0)
             },
             AddressingMode::Ind => {
                 (Address::Addressed(cpu.read_wide(cpu.pc + 1, ctx)), 0)
             },
             AddressingMode::XInd => {
                 let zpg_addr = cpu.read(cpu.pc + 1, ctx);
-                (Address::Addressed(cpu.read_wide(zpg_addr.wrapping_add(x) as u16, ctx)), 0)
+                (Address::Addressed(cpu.read_wide(zpg_addr.wrapping_add(cpu.x) as u16, ctx)), 0)
             },
             AddressingMode::Rel => {
                 (Address::Immediate(cpu.read(cpu.pc + 1, ctx)), 0)
@@ -79,7 +77,7 @@ impl AddressingMode {
                 let zpg_addr = cpu.read(cpu.pc + 1, ctx);
                 let mut effective_addr = cpu.read_wide(zpg_addr as u16, ctx);
                 let prev = effective_addr;
-                effective_addr += y as u16;
+                effective_addr += cpu.y as u16;
                 let cycles = if prev >> 8 != effective_addr >> 8 {
                     1
                 }
@@ -93,7 +91,7 @@ impl AddressingMode {
             },
             AddressingMode::AbsX => {
                 let addr = cpu.read_wide(cpu.pc + 1, ctx);
-                let eff_addr = addr + x as u16;
+                let eff_addr = addr + cpu.x as u16;
                 let cycles = if addr >> 8 != eff_addr >> 8 {
                     println!("{:#06X}, {:#06X}", addr, eff_addr);
                     1
@@ -105,7 +103,7 @@ impl AddressingMode {
             },
             AddressingMode::AbsY => {
                 let addr = cpu.read_wide(cpu.pc + 1, ctx);
-                let eff_addr = addr + y as u16;
+                let eff_addr = addr + cpu.y as u16;
                 let cycles = if addr >> 8 != eff_addr >> 8 {
                     1
                 }
@@ -507,27 +505,25 @@ fn COMPARE(_: &Context, cpu: &mut CPU, lhs: u8, rhs: u8) {
 }
 
 fn ADC_imm(_: &Context, cpu: &mut CPU, rhs: u8) {
-    let acc = *cpu.acc.borrow();
-    let res1 = acc as u16 + rhs as u16 + cpu.get_carry() as u16;
+    let res1 = cpu.acc as u16 + rhs as u16 + cpu.get_carry() as u16;
     let result = (res1 % 0x100) as u8;
     let did_carry = res1 & 0x100 != 0;
-    let did_overflow = (acc ^ result) & (rhs ^ result) & 0x80 != 0;
+    let did_overflow = (cpu.acc ^ result) & (rhs ^ result) & 0x80 != 0;
     cpu.update_flags(result);
     cpu.set_carry(did_carry);
     cpu.set_overflow(did_overflow);
-    *cpu.acc.borrow_mut() = result;
+    cpu.acc = result;
 }
 
 fn SUB(_: &Context, cpu: &mut CPU, rhs: u8) {
-    let acc = *cpu.acc.borrow();
-    let res1 = acc as u16 + (!rhs) as u16 + cpu.get_carry() as u16;
+    let res1 = cpu.acc as u16 + (!rhs) as u16 + cpu.get_carry() as u16;
     let result = (res1 % 0x100) as u8;
     let did_carry = res1 & 0x100 != 0;
-    let did_overflow = (acc ^ result) & (!rhs ^ result) & 0x80 != 0;
+    let did_overflow = (cpu.acc ^ result) & (!rhs ^ result) & 0x80 != 0;
     cpu.update_flags(result);
     cpu.set_carry(did_carry);
     cpu.set_overflow(did_overflow);
-    *cpu.acc.borrow_mut() = result;
+    cpu.acc = result;
 }
 
 fn ror(_: &Context, cpu: &mut CPU, mut value: u8) -> u8 {
@@ -560,20 +556,17 @@ fn BIT(ctx: &Context, cpu: &mut CPU, addr: u16) {
     let value = cpu.read(addr, ctx);
     cpu.set_neg(value & 0x80 != 0);
     cpu.set_overflow(value & 0x40 != 0);
-    let acc = *cpu.acc.borrow();
-    cpu.set_zero(acc & value == 0);
+    cpu.set_zero(cpu.acc & value == 0);
 }
 
 fn AAX(ctx: &Context, cpu: &mut CPU, addr: u16) {
-    let result = *cpu.acc.borrow() & *cpu.x.borrow();
-    cpu.write(addr, result, ctx);
+    cpu.write(addr, cpu.acc & cpu.x, ctx);
 }
 
 fn DCP(ctx: &Context, cpu: &mut CPU, addr: u16) {
     let v = (Wrapping(cpu.read(addr, ctx)) - Wrapping(1)).0;
     cpu.write(addr, v, ctx);
-    let acc = *cpu.acc.borrow();
-    COMPARE(ctx, cpu, acc, v);
+    COMPARE(ctx, cpu, cpu.acc, v);
 }
 
 fn ISC(ctx: &Context, cpu: &mut CPU, addr: u16) {
@@ -587,21 +580,17 @@ fn SLO(ctx: &Context, cpu: &mut CPU, addr: u16) {
     let c = m >> 7;
     m <<= 1;
     cpu.write(addr, m, ctx); 
-    let mut acc = *cpu.acc.borrow_mut();
-    acc |= m;
-    cpu.update_flags(acc);
+    cpu.acc |= m;
+    cpu.update_flags(cpu.acc);
     cpu.set_carry(c != 0);
-    *cpu.acc.borrow_mut() = acc;
 }
 
 fn RLA(ctx: &Context, cpu: &mut CPU,  addr: u16) {
     let v = cpu.read(addr, ctx);
     let result = rol(ctx, cpu, v);
     cpu.write(addr, result, ctx);
-    let mut acc = *cpu.acc.borrow();
-    acc &= result;
-    cpu.update_flags(acc);
-    *cpu.acc.borrow_mut() = acc;
+    cpu.acc &= result;
+    cpu.update_flags(cpu.acc);
 }
 
 fn SRE(ctx: &Context, cpu: &mut CPU, addr: u16) {
@@ -611,10 +600,8 @@ fn SRE(ctx: &Context, cpu: &mut CPU, addr: u16) {
     cpu.write(addr, m, ctx);
     cpu.set_carry(carry);
 
-    let mut acc = *cpu.acc.borrow();
-    acc ^= m;
-    cpu.update_flags(acc);
-    *cpu.acc.borrow_mut() = acc;
+    cpu.acc ^= m;
+    cpu.update_flags(cpu.acc);
 }
 
 fn RRA(ctx: &Context, cpu: &mut CPU, addr: u16) {
@@ -633,7 +620,7 @@ fn asl(_: &Context, cpu: &mut CPU, mut val: u8) -> u8 {
 }
 
 fn RTI(_: &Context, cpu: &mut CPU) {
-    *cpu.status.borrow_mut() = (cpu.pop() & !(0b01 << 4)) | 0b10 << 4;
+    cpu.status = (cpu.pop() & !(0b01 << 4)) | 0b10 << 4;
     cpu.pc = cpu.pop() as u16;
     cpu.pc |= (cpu.pop() as u16) << 8;
     cpu.pc -= 1;
@@ -670,10 +657,8 @@ make_branch_func!(BCS, BCC, get_carry);
 macro_rules! make_arith_func {
     ($name:ident, $name2:ident, $op:tt) => {
         fn $name(_: &Context, cpu: &mut CPU, imm: u8) { 
-            let mut result = *cpu.acc.borrow();
-            result $op imm;
-            cpu.update_flags(result);
-            *cpu.acc.borrow_mut() = result;
+            cpu.acc $op imm;
+            cpu.update_flags(cpu.acc);
         }
 
         fn $name2(ctx: &Context, cpu: &mut CPU, addr: u16) {
@@ -690,9 +675,8 @@ make_arith_func!(EOR_imm, EOR, ^=);
 macro_rules! make_trans_func {
     ($name:ident, $lhs:ident, $rhs:ident) => {
         fn $name(_: &Context, cpu: &mut CPU) {
-            let value = *cpu.$rhs.borrow();
-            *cpu.$lhs.borrow_mut() = value;
-            cpu.update_flags(value);
+            cpu.$lhs = cpu.$rhs;
+            cpu.update_flags(cpu.$rhs);
         }
     };
 }
@@ -704,7 +688,7 @@ make_trans_func!(TAX, x, acc);
 make_trans_func!(TSX, x, sp);
 
 fn TXS(_: &Context, cpu: &mut CPU) {
-    *cpu.sp.borrow_mut() = *cpu.x.borrow();
+    cpu.sp = cpu.x;
 }
 
 fn SBC(ctx: &Context, cpu: &mut CPU, addr: u16) { let v = cpu.read(addr, ctx); SBC_imm(ctx, cpu, v) }
@@ -716,8 +700,7 @@ fn LAX(ctx: &Context, cpu: &mut CPU, addr: u16) { LDA(ctx, cpu, addr); TAX(ctx, 
 macro_rules! make_compare {
     ($name:ident, $name2:ident, $reg:ident) => {
         fn $name(ctx: &Context, cpu: &mut CPU, imm: u8) {
-            let val = *cpu.$reg.borrow();
-            COMPARE(ctx, cpu, val, imm);
+            COMPARE(ctx, cpu, cpu.$reg, imm);
         }
 
         fn $name2(ctx: &Context, cpu: &mut CPU, addr: u16) {
@@ -734,9 +717,8 @@ make_compare!(CPY_imm, CPY, y);
 macro_rules! make_shift {
     ($name:ident, $name2:ident, $func:ident) => {
         fn $name(ctx: &Context, cpu: &mut CPU) {
-            let value = *cpu.acc.borrow();
-            let result = $func(ctx, cpu, value);
-            *cpu.acc.borrow_mut() = result;
+            let result = $func(ctx, cpu, cpu.acc);
+            cpu.acc = result;
         }
 
         fn $name2(ctx: &Context, cpu: &mut CPU, addr: u16) {
@@ -756,7 +738,7 @@ macro_rules! make_load_store {
     ($loadname_imm:ident, $loadname:ident, $storename:ident, $reg:ident) => {
         fn $loadname_imm(_: &Context, cpu: &mut CPU, imm: u8) {
             cpu.update_flags(imm);
-            *cpu.$reg.borrow_mut() = imm;
+            cpu.$reg = imm;
         }
 
         fn $loadname(ctx: &Context, cpu: &mut CPU, addr: u16) {
@@ -765,7 +747,7 @@ macro_rules! make_load_store {
         }
 
         fn $storename(ctx: &Context, cpu: &mut CPU, addr: u16) {
-            let value = *cpu.$reg.borrow();
+            let value = cpu.$reg;
             cpu.write(addr, value, ctx);
         }
     };
@@ -781,15 +763,15 @@ fn INC(ctx: &Context, cpu: &mut CPU, addr: u16) { let v = (Wrapping(cpu.read(add
 macro_rules! make_inc_dec {
     ($decname:ident, $incname:ident, $reg:ident) => {
         fn $decname(_: &Context, cpu: &mut CPU) {
-            let result = (Wrapping(*cpu.$reg.borrow()) - Wrapping(1)).0;
+            let result = (Wrapping(cpu.$reg) - Wrapping(1)).0;
             cpu.update_flags(result);
-            *cpu.$reg.borrow_mut() = result;
+            cpu.$reg = result;
         }
 
         fn $incname(_: &Context, cpu: &mut CPU) {
-            let result = (Wrapping(*cpu.$reg.borrow()) + Wrapping(1)).0;
+            let result = (Wrapping(cpu.$reg) + Wrapping(1)).0;
             cpu.update_flags(result);
-            *cpu.$reg.borrow_mut() = result;
+            cpu.$reg = result;
         }
     };
 }
@@ -798,22 +780,21 @@ make_inc_dec!(DEX, INX, x);
 make_inc_dec!(DEY, INY, y);
 
 fn PHP(_: &Context, cpu: &mut CPU) {
-    let status = *cpu.status.borrow() | (0b11 << 4);
+    let status = cpu.status | (0b11 << 4);
     cpu.push(status)
 }
 fn PLP(_: &Context, cpu: &mut CPU) {
     let status = (cpu.pop() & !(0b01 << 4)) | (0b10 << 4);
-    *cpu.status.borrow_mut() = status;
+    cpu.status = status;
 }
 
 fn PHA(_: &Context, cpu: &mut CPU) {
-    let acc = *cpu.acc.borrow();
-    cpu.push(acc);
+    cpu.push(cpu.acc);
 }
 fn PLA(_: &Context, cpu: &mut CPU) {
     let value = cpu.pop();
     cpu.update_flags(value);
-    *cpu.acc.borrow_mut() = value;
+    cpu.acc = value;
 }
 
 macro_rules! make_flag_setter {

@@ -1,3 +1,5 @@
 /target
 **/*.rs.bk
 **/*.nes
+**/*.data
+**/*.data.old

@@ -82,14 +82,10 @@ fn render_pattern_tables(sdl_system: &mut SDLSystem, mapper: &mut dyn Mapped) {
     for table in 0..2 {
         for row in 0..16 {
             for col in 0..16 {
-                // TODO: Don't read the whole thing
-                let mut entry = Vec::with_capacity(16);
-                for i in 0..16 {
-                    entry.push(mapper.mem_ppu(i + (row * 16 + col) * 16 + 0x1000 * table).read());
-                }
+                let base_addr = (row * 16 + col) * 16 + 0x1000 * table;
                 for y in 0..8 {
                     for x in 0..8 {
-                        let color = color_in_pattern(&entry, y as u8, x as u8).0 * 85;
+                        let color = color_pattern_mapped(mapper, base_addr, y as u8, x as u8).0 * 85;
                         let p_x = x + col * 8 + table * 128 + 256;
                         let p_y = y + row * 8;
 
@@ -102,13 +98,12 @@ fn render_pattern_tables(sdl_system: &mut SDLSystem, mapper: &mut dyn Mapped) {
     }
 }
 
-fn color_in_pattern(pattern: &[u8], row: u8, col: u8) -> PalettedColor {
-    assert_eq!(pattern.len(), 16);
+fn color_pattern_mapped(mapper: &mut dyn Mapped, base_addr: u16, row: u8, col: u8) -> PalettedColor {
     assert!(row < 8);
     assert!(col < 8);
 
-    let lo_color = pattern[row as usize];
-    let hi_color = pattern[(row + 8) as usize];
+    let lo_color = mapper.mem_ppu(base_addr + row as u16).read();
+    let hi_color = mapper.mem_ppu(base_addr + (row + 8) as u16).read();
 
     PalettedColor(((hi_color >> (7 - col)) & 1) << 1 | ((lo_color >> (7 - col)) & 1))
 }
@@ -326,12 +321,9 @@ impl PPU {
 
         let palette_idx = get_palette_index(&name_table[attr_table..attr_table+64], row as u8, col as u8);
 
-        let mut pattern = Vec::with_capacity(16);
-        for i in 0..16 {
-            pattern.push(mapper.mem_ppu(i + pattern_table + 16 * tile_name as u16).read());
-        }
+        let base_addr = pattern_table + 16 * tile_name as u16;
 
-        let color = color_in_pattern(&pattern, (y % 8) as u8, (x % 8) as u8);
+        let color = color_pattern_mapped(mapper, base_addr, (y % 8) as u8, (x % 8) as u8);
 
         let c = self.get_color(color, palette_idx, false);
 
@@ -375,12 +367,8 @@ impl PPU {
             object.index
         };
 
-        let mut pattern = Vec::with_capacity(16);
-        for i in 0..16 {
-            pattern.push(mapper.mem_ppu(i + selected_patt_table + 16 * index as u16).read());
-        }
-
-        let sprite_color = color_in_pattern(&pattern, s_y, s_x);
+        let base_addr = selected_patt_table + 16 * index as u16;
+        let sprite_color = color_pattern_mapped(mapper, base_addr, s_y, s_x);
 
         let color = self.colors[self.get_color(sprite_color, object.attrs.palette_idx(), true) as usize];
 

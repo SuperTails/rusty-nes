@@ -1,7 +1,6 @@
 pub mod instruction;
 
 use instruction::Instruction;
-use std::cell::RefCell;
 use super::Context;
 
 pub enum State {
@@ -12,12 +11,12 @@ pub enum State {
 }
 
 pub struct CPU {
-	pub status: RefCell<u8>,
+	pub status: u8,
 	pub pc: u16,
-	pub acc: RefCell<u8>,
-	pub x: RefCell<u8>,
-	pub y: RefCell<u8>,
-	pub sp: RefCell<u8>,
+	pub acc: u8,
+	pub x: u8,
+	pub y: u8,
+	pub sp: u8,
     pub ram: [u8; 0x800],
     pub state: State,
 }
@@ -25,26 +24,25 @@ pub struct CPU {
 impl CPU {
     pub fn new() -> CPU {
         CPU {
-            status: RefCell::new(0),
+            status: 0,
             pc: 0xFFFC,
-            acc: RefCell::new(0),
-            x: RefCell::new(0),
-            y: RefCell::new(0),
-            sp: RefCell::new(0),
+            acc: 0,
+            x: 0,
+            y: 0,
+            sp: 0,
             ram: [0; 0x800],
             state: State::Reset,
         }
     }
 
-    fn set_status(&self, v: bool, b: u8) {
+    fn set_status(&mut self, v: bool, b: u8) {
         assert!(b < 8);
-        let mut status = self.status.borrow_mut();
-        *status &= !(1 << b);
-        *status |= (v as u8) << b;
+        self.status &= !(1 << b);
+        self.status |= (v as u8) << b;
     }
 
     fn get_status(&self, b: u8) -> bool {
-        (*self.status.borrow() >> b) & 1 != 0
+        (self.status >> b) & 1 != 0
     }
 
     pub fn read(&self, addr: u16, context: &Context) -> u8 {
@@ -65,7 +63,7 @@ impl CPU {
         }
     }
 
-    pub fn set_decimal(&self, v: bool) {
+    pub fn set_decimal(&mut self, v: bool) {
         self.set_status(v, 3);
     }
 
@@ -73,7 +71,7 @@ impl CPU {
         self.get_status(3)
     }
 
-    pub fn set_interrupt(&self, v: bool) {
+    pub fn set_interrupt(&mut self, v: bool) {
         self.set_status(v, 2);
     }
 
@@ -81,7 +79,7 @@ impl CPU {
         self.get_status(2)
     }
 
-	pub fn set_neg(&self, v: bool) {
+	pub fn set_neg(&mut self, v: bool) {
         self.set_status(v, 7);
 	}
 
@@ -89,7 +87,7 @@ impl CPU {
         self.get_status(7)
     }
 
-    pub fn set_overflow(&self, v: bool) {
+    pub fn set_overflow(&mut self, v: bool) {
         self.set_status(v, 6);
     }
 
@@ -97,7 +95,7 @@ impl CPU {
         self.get_status(6)
     }
 
-    pub fn set_carry(&self, v: bool) {
+    pub fn set_carry(&mut self, v: bool) {
         self.set_status(v, 0);
     }
 
@@ -105,7 +103,7 @@ impl CPU {
         self.get_status(0)
     }
 
-    pub fn set_zero(&self, v: bool) {
+    pub fn set_zero(&mut self, v: bool) {
         self.set_status(v, 1);
     }
 
@@ -125,18 +123,17 @@ impl CPU {
     }
 
     pub fn push(&mut self, value: u8) {
-        let old_sp = *self.sp.borrow();
+        let old_sp = self.sp;
         self.ram[0x0100 + old_sp as usize] = value;
-        *self.sp.borrow_mut() = old_sp.wrapping_sub(1);
+        self.sp = old_sp.wrapping_sub(1);
     }
 
     pub fn pop(&mut self) -> u8 {
-        let mut sp = self.sp.borrow_mut();
-        *sp = sp.wrapping_add(1);
-        self.ram[0x0100 + *sp as usize]
+        self.sp = self.sp.wrapping_add(1);
+        self.ram[0x0100 + self.sp as usize]
     }
 
-    pub fn update_flags(&self, value: u8) {
+    pub fn update_flags(&mut self, value: u8) {
         self.set_neg(value & (1 << 7) != 0);
         self.set_zero(value == 0);
     }
@@ -144,8 +141,7 @@ impl CPU {
     pub fn trigger_nmi(&mut self, ctx: &Context) {
         self.push((self.pc >> 8) as u8);
         self.push((self.pc & 0xFF) as u8);
-        let status = *self.status.borrow();
-        self.push(status | 0b10 << 4);
+        self.push(self.status | 0b10 << 4);
 
         // Disable interrupts
         self.set_interrupt(true);
@@ -163,8 +159,7 @@ impl CPU {
 
         self.push((self.pc >> 8) as u8);
         self.push((self.pc & 0xFF) as u8);
-        let status = *self.status.borrow();
-        self.push(status | 0b10 << 4);
+        self.push(self.status | 0b10 << 4);
 
         // Disable interrupts
         self.set_interrupt(true);
@@ -176,14 +171,14 @@ impl CPU {
 	}
 
     pub fn print_stack(&self) {
-        println!("SP: {:#04X}, Stack:", *self.sp.borrow());
-        for i in *self.sp.borrow()..=255 {
+        println!("SP: {:#04X}, Stack:", self.sp);
+        for i in self.sp..=255 {
             println!("{:#04X}: {:#04X}", i, self.ram[0x0100 + i as usize]);
         }
     }
 
     pub fn print_instr(&mut self, instr: &Instruction, ctx: &Context) {
-        print!("[PC: {:#06X}] A:{:02X} X:{:02X} Y:{:02X} P:{:02X} SP:{:02X} {} {: >4?}:", self.pc, *self.acc.borrow(), *self.x.borrow(), *self.y.borrow(), *self.status.borrow(), *self.sp.borrow(), instr.opcode, instr.mode);
+        print!("[PC: {:#06X}] A:{:02X} X:{:02X} Y:{:02X} P:{:02X} SP:{:02X} {} {: >4?}:", self.pc, self.acc, self.x, self.y, self.status, self.sp, instr.opcode, instr.mode);
         for i in 0..instr.mode.len() {
             print!("{:#04X} ", self.read(self.pc + i as u16, ctx));
         }
