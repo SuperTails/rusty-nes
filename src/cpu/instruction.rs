@@ -50,45 +50,70 @@ impl AddressingMode {
         }
     }
 
-    pub fn address(&self, ctx: &Context, cpu: &CPU) -> Address {
+    pub fn address(&self, ctx: &Context, cpu: &CPU) -> (Address, usize) {
         let x = *cpu.x.borrow();
         let y = *cpu.y.borrow();
         match self {
-            AddressingMode::Impl => Address::Implied,
-            AddressingMode::Imm => Address::Immediate(cpu.read(cpu.pc + 1, ctx)),
+            AddressingMode::Impl => (Address::Implied, 0),
+            AddressingMode::Imm => (Address::Immediate(cpu.read(cpu.pc + 1, ctx)), 0),
             AddressingMode::Zpg => {
-                Address::Addressed(cpu.read(cpu.pc + 1, ctx) as u16)
+                (Address::Addressed(cpu.read(cpu.pc + 1, ctx) as u16), 0)
             },
             AddressingMode::ZpgX => {
-                Address::Addressed(cpu.read(cpu.pc + 1, ctx).wrapping_add(x) as u16)
+                (Address::Addressed(cpu.read(cpu.pc + 1, ctx).wrapping_add(x) as u16), 0)
             },
             AddressingMode::ZpgY => {
-                Address::Addressed(cpu.read(cpu.pc + 1, ctx).wrapping_add(y) as u16)
+                (Address::Addressed(cpu.read(cpu.pc + 1, ctx).wrapping_add(y) as u16), 0)
             },
             AddressingMode::Ind => {
-                Address::Addressed(cpu.read_wide(cpu.pc + 1, ctx))
+                (Address::Addressed(cpu.read_wide(cpu.pc + 1, ctx)), 0)
             },
             AddressingMode::XInd => {
                 let zpg_addr = cpu.read(cpu.pc + 1, ctx);
-                Address::Addressed(cpu.read_wide(zpg_addr.wrapping_add(x) as u16, ctx))
+                (Address::Addressed(cpu.read_wide(zpg_addr.wrapping_add(x) as u16, ctx)), 0)
             },
             AddressingMode::Rel => {
-                Address::Immediate(cpu.read(cpu.pc + 1, ctx))
+                (Address::Immediate(cpu.read(cpu.pc + 1, ctx)), 0)
             },
             AddressingMode::IndY => {
                 let zpg_addr = cpu.read(cpu.pc + 1, ctx);
-                let mut effective_addr = Wrapping(cpu.read_wide(zpg_addr as u16, ctx));
-                effective_addr += Wrapping(y as u16);
-                Address::Addressed(effective_addr.0)
+                let mut effective_addr = cpu.read_wide(zpg_addr as u16, ctx);
+                let prev = effective_addr;
+                effective_addr += y as u16;
+                let cycles = if prev >> 8 != effective_addr >> 8 {
+                    1
+                }
+                else {
+                    0
+                };
+                (Address::Addressed(effective_addr), cycles)
             }
             AddressingMode::Abs => {
-                Address::Addressed(cpu.read_wide_nowrap(cpu.pc + 1, ctx))
+                (Address::Addressed(cpu.read_wide_nowrap(cpu.pc + 1, ctx)), 0)
             },
             AddressingMode::AbsX => {
-                Address::Addressed(cpu.read_wide(cpu.pc + 1, ctx).wrapping_add(x as u16))
+                let addr = cpu.read_wide(cpu.pc + 1, ctx);
+                let eff_addr = addr + x as u16;
+                let cycles = if addr >> 8 != eff_addr >> 8 {
+                    println!("{:#06X}, {:#06X}", addr, eff_addr);
+                    1
+                }
+                else {
+                    0
+                };
+                (Address::Addressed(eff_addr), cycles)
             },
             AddressingMode::AbsY => {
-                Address::Addressed(cpu.read_wide(cpu.pc + 1, ctx).wrapping_add(y as u16))
+                let addr = cpu.read_wide(cpu.pc + 1, ctx);
+                let eff_addr = addr + y as u16;
+                let cycles = if addr >> 8 != eff_addr >> 8 {
+                    1
+                }
+                else {
+                    0
+                };
+                (Address::Addressed(eff_addr), cycles)
+
             },
         }
     }
@@ -164,13 +189,15 @@ impl Instruction {
     pub fn run(&self, ctx: &Context, cpu: &mut CPU) -> usize {
         let last_pc = cpu.pc;
 
-        let addr = self.mode.address(ctx, cpu);
+        let (addr, addr_cycles) = self.mode.address(ctx, cpu);
         
         self.operation.run(ctx, cpu, &addr);
 
         let mut cycles = self.cycles as usize;
 
-        // TODO: Addressing mode delays
+        if !self.opcode.starts_with("STA") {
+            cycles += addr_cycles;
+        }
 
         // Check for page boundary crossings
         // if this is a branch instruction
@@ -180,9 +207,12 @@ impl Instruction {
             }
             else if cpu.pc != last_pc {
                 cycles += 1;
+                if (cpu.pc + self.mode.len() as u16) >> 8 != last_pc >> 8 {
+                    cycles += 1;
+                }
             }
         }
-        
+
         cpu.pc += self.mode.len() as u16;
 
         cycles
@@ -307,6 +337,92 @@ macro_rules! inst_list {
 
                 for (k, v) in excs.into_iter() {
                     result[k] = Some(v);
+                }
+
+                let other_times = vec![
+                    // DOP
+                    (0x04, 3),
+                    (0x14, 4),
+                    (0x34, 4),
+                    (0x44, 3),
+                    (0x54, 4),
+                    (0x64, 3),
+                    (0x74, 4),
+                    (0x80, 2),
+                    (0xD4, 4),
+                    (0xF4, 4),
+                    // TOP
+                    (0x0C, 4),
+                    (0x1C, 4),
+                    (0x3C, 4),
+                    (0x5C, 4),
+                    (0x7C, 4),
+                    (0xDC, 4),
+                    (0xFC, 4),
+                    // LAX
+                    (0xA7, 3),
+                    (0xB7, 4),
+                    (0xAF, 4),
+                    (0xBF, 4),
+                    (0xA3, 6),
+                    (0xB3, 5),
+                    // AAX
+                    (0x87, 3),
+                    (0x97, 4),
+                    (0x83, 6),
+                    (0x8F, 4),
+                    // DCP
+                    (0xC7, 5),
+                    (0xD7, 6),
+                    (0xCF, 6),
+                    (0xDF, 6), // Should be 7?
+                    (0xDB, 6), // Should be 7?
+                    (0xC3, 8),
+                    (0xD3, 7), // Should be 8?
+                    // ISC
+                    (0xE7, 5),
+                    (0xF7, 6),
+                    (0xEF, 6),
+                    (0xFF, 6), // Should be 7?
+                    (0xFB, 6), // Should be 7?
+                    (0xE3, 8),
+                    (0xF3, 7), // Should be 7?
+                    // SLO
+                    (0x07, 5),
+                    (0x17, 6),
+                    (0x0F, 6),
+                    (0x1F, 6), // Should be 7?
+                    (0x1B, 6), // Should be 7?
+                    (0x03, 8),
+                    (0x13, 7), // Should be 8?
+                    // RLA
+                    (0x27, 5),
+                    (0x37, 6),
+                    (0x2F, 6),
+                    (0x3F, 6), // Should be 7?
+                    (0x3B, 6), // Should be 7?
+                    (0x23, 8),
+                    (0x33, 7), // Should be 8?
+                    // SRE
+                    (0x47, 5),
+                    (0x57, 6),
+                    (0x4F, 6),
+                    (0x5F, 6), // Should be 7?
+                    (0x5B, 6), // Should be 7?
+                    (0x43, 8),
+                    (0x53, 7), // Should be 8?
+                    // RRA
+                    (0x67, 5),
+                    (0x77, 6),
+                    (0x6F, 6),
+                    (0x7F, 6), // Should be 7?
+                    (0x7B, 6), // Should be 7?
+                    (0x63, 8),
+                    (0x73, 7), // Should be 8?
+                ];
+
+                for (op, time) in other_times.iter() {
+                    result[*op as usize].as_mut().unwrap_or_else(|| { println!("Instr {:#X} doesn't exist", *op); std::process::exit(1) }).cycles = *time;
                 }
 
                 result

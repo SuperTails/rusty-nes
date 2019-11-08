@@ -2,7 +2,9 @@ use sdl2::pixels::Color;
 use sdl2::rect::Point;
 use super::SDLSystem;
 use crate::mapper::Mapped;
+use crate::cpu::CPU;
 use std::cell::RefCell;
+use std::time::Instant;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct PalettedColor(pub u8);
@@ -132,7 +134,11 @@ pub struct PPU {
     pub oam_addr: RefCell<u8>,
     pub oam: RefCell<[OAMEntry; 64]>,
 
+    pub dma_request: Option<u8>,
+
     prev_nmi_state: bool,
+
+    last_frames: Vec<Instant>,
 
     scanline: usize,
     pixel: usize,
@@ -143,12 +149,14 @@ pub struct PPU {
 impl PPU {
     pub fn new() -> PPU {
         PPU {
+            dma_request: None,
             prev_nmi_state: false,
             ctrl: PPUCtrl(0),
             scanline: 0,
             pixel: 0,
             mask: 0,
             last_value: 0,
+            last_frames: [Instant::now(); 10].to_vec(),
             status: RefCell::new(0),
             cycles: 0,
             address: RefCell::new(0),
@@ -182,8 +190,12 @@ impl PPU {
      *  1 CPU cycle = 3 PPU cycles
      *
      */
-    pub fn next(&mut self, cpu_cycles: usize, sdl_system: &mut SDLSystem, mapper: &mut dyn Mapped) {
+    pub fn next(&mut self, cpu_cycles: usize, sdl_system: &mut SDLSystem, mapper: &mut dyn Mapped, cpu: &CPU) {
         for _ in 0..(3 * cpu_cycles) {
+            if let Some(addr) = self.dma_request.take() {
+                self.dma(addr, cpu);
+            }
+
             if self.pixel >= 341 {
                 self.scanline += 1;
                 self.pixel = 0;
@@ -212,6 +224,17 @@ impl PPU {
                     // Trigger NMI
                     if self.scanline == 242 && self.pixel == 1 {
                         println!("VBlank");
+                                        
+                        // CPU Clock rate is 1789772.72 Hz
+                        
+                        let frame_time = (self.last_frames[0].elapsed().as_micros() as f64 / self.last_frames.len() as f64) / 1000.0;
+                        let framerate = 1000.0 / frame_time;
+
+                        self.last_frames.remove(0);
+                        self.last_frames.push(Instant::now());
+
+                        println!("Framerate: {}", framerate);
+
                         render_pattern_tables(sdl_system, mapper);
                         self.render_oam(sdl_system, mapper);
                         /*for y in (0..(240 / 32)).map(|y| y * 32) {
@@ -438,13 +461,11 @@ impl PPU {
     }
 
 
-    pub fn dma(&self, addr: u8, ctx: &crate::Context) {
+    pub fn dma(&self, addr: u8, cpu: &CPU) {
         /* TODO: Determine if this should depend on oam_addr */
         //print!("{:#06X}, OAM: [", addr);
         for idx in 0..64 {
             let full_addr = (addr as u16) << 8 | (idx * 4);
-
-            let cpu = ctx.cpu.borrow();
 
             // TODO: Access properly
             self.oam.borrow_mut()[idx as usize] = OAMEntry {
@@ -458,84 +479,6 @@ impl PPU {
                 print!("{:02X}: {:?}, ", idx, self.oam[idx as usize]);
             }*/
         }
-
         //println!("]");
     }
-
-    /*pub fn read(&mut self, reg: u8, context: &Context) -> u8 {
-        /* TODO: Figure out which of these you *can* read from*/
-        match reg {
-            0 => self.ctrl.0,
-            1 => self.mask,
-            2 => { let result = self.status; self.status &= !(1 << 7); result }, /* TODO: figure out resetting address latches */
-            /*3 => { println!("Cannot read from OAM address register"); 0 },*/
-            4 => {
-                let array_addr = self.oam_addr / 4;
-                let entry = &self.oam[array_addr as usize];
-                let result = match self.oam_addr % 4 {
-                    0 => entry.y,
-                    1 => entry.index,
-                    2 => entry.attrs.0,
-                    3 => entry.x,
-                    _ => unreachable!(),
-                };
-
-                self.oam_addr = (Wrapping(self.oam_addr) + Wrapping(1)).0;
-
-                result
-            },
-            /*5 => { println!("Cannot read from scroll register"); 0 },
-            6 => { println!("Cannot read from address register"); 0 },*/
-            3|5|6 => 0,
-            7 => {
-                let result = context.ppu_address(self.address).read();
-                self.incr_address();
-                result
-            },
-            _ => panic!("Unknown register {}", reg),
-        }
-    }
-
-    pub fn write(&mut self, reg: u8, value: u8, ctx: &crate::Context) {
-        //println!("Writing {} to reg {}", value, reg);
-        match reg {
-            0 => self.ctrl = PPUCtrl(value),
-            1 => self.mask = value,
-            2 => println!("Cannot write to status register"),
-            3 => *self.oam_addr.borrow_mut() = value,
-            4 => {
-                let array_addr = self.oam_addr / 4;
-                let entry = &mut self.oam[array_addr as usize];
-                match self.oam_addr % 4 {
-                    0 => entry.y = value,
-                    1 => entry.index = value,
-                    2 => entry.attrs = OAMEntryAttrs(value),
-                    3 => entry.x = value,
-                    _ => unreachable!(),
-                };
-
-                self.oam_addr = (Wrapping(self.oam_addr) + Wrapping(1)).0;
-            },
-            5 => {
-                self.scroll  <<= 8;
-                self.scroll  |= value as u16;
-                //println!("Wrote {:#04X} to PPU scroll", value);
-                if self.scroll != 0 {
-                    println!("Ignoring scroll {}", self.scroll);
-                    //unimplemented!("Scrolling");
-                }
-            },
-            6 => {
-                self.address <<= 8;
-                self.address |= value as u16;
-                //println!("Wrote {:#04X} to PPU address", value);
-            },
-            7 => { 
-                ctx.ppu_address(self.address).write(value);
-                self.incr_address();
-            },
-            14 => self.dma(value, ctx),
-            _ => panic!("Unknown register {}", reg),
-        }
-    }*/
 }

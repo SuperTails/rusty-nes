@@ -224,12 +224,15 @@ impl Context {
             self.cycle += cycles;
 
             /* TODO: Actually count the number of cycles properly */
-            self.ppu.borrow_mut().next(cycles as usize, &mut self.sdl_system, &mut (*self.mapper));
+            self.ppu.borrow_mut().next(cycles as usize, &mut self.sdl_system, &mut (*self.mapper), &self.cpu.borrow_mut());
 
             if self.ppu.borrow_mut().nmi_falling() {
                 self.cpu.borrow_mut().trigger_nmi(self);
+
+                // TODO: Don't depend on NMIs
             }
         }
+
     }
 }
 

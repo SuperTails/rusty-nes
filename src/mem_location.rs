@@ -196,7 +196,7 @@ impl MemLocation for PPURegister<'_> {
                 *address |= value as u16;
             },
             PPURegInt::Dma => {
-                self.ppu.borrow().dma(value, self.context);
+                self.ppu.borrow_mut().dma_request = Some(value);
             },
             PPURegInt::Data => {
                 self.context.ppu_address(*self.ppu.borrow().address.borrow()).write(value);

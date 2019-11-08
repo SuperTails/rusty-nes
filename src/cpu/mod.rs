@@ -208,7 +208,7 @@ impl CPU {
                     panic!("Instruction {:#04X} does not exist", id)
                 });
 
-                self.print_instr(instr, ctx);
+                //self.print_instr(instr, ctx);
 
                 // TODO: Fix this
                 if id == 0x00 && self.try_irq(ctx) {
