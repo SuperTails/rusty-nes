@@ -1,13 +1,52 @@
 use num_traits::cast::FromPrimitive;
 use crate::mem_location::*;
 use std::cell::RefCell;
+use enum_dispatch::enum_dispatch;
+
+type MapperResult<'a> = AnyMemLocation<'a>;
 
 pub trait Mapped {
-    fn mem_cpu<'a>(&'a self, addr: u16) -> Box<dyn MemLocation + 'a>;
+    fn mem_cpu<'a>(&'a self, addr: u16) -> MapperResult<'a>;
 
-    fn mem_ppu<'a>(&'a self, addr: u16) -> Box<dyn MemLocation + 'a>;
+    fn mem_ppu<'a>(&'a self, addr: u16) -> MapperResult<'a>;
+
+    fn map_nametable<'a>(&'a self, addr: u16) -> u16 {
+        assert!(addr >= 0x2000);
+        assert!(addr <= 0x3FFF);
+
+        if self.is_vert_mirrored() {
+            // $2000 == $2800
+            // $2400 == $2C00
+            0x2000 + (addr - 0x2000) % 0x800
+        }
+        else {
+            // $2000 == $2400
+            // $2800 == $2C00
+            if addr >= 0x2800 {
+                0x2400 + ((addr - 0x2800) % 0x400)
+            }
+            else {
+                0x2000 + ((addr - 0x2000) % 0x400)
+            }
+        }
+    }
 
     fn is_vert_mirrored(&self) -> bool;
+}
+
+#[enum_dispatch]
+pub enum AnyMemLocation<'a> {
+    CPURamLoc(CPURamLoc<'a>),
+    RamLocation(RamLocation<'a>),
+    RomLocation(RomLocation<'a>),
+    PPUNametable(PPUNametable<'a>),
+    PPUPalette(PPUPalette<'a>),
+    PPURegister(PPURegister<'a>),
+    APURegister(APURegister<'a>),
+    CTLRegister(CTLRegister<'a>),
+    Mapper0Ram(Mapper0Ram<'a>),
+    Mapper1Location(Mapper1Location<'a>),
+    Mapper3Location(Mapper3Location<'a>),
 }
 
 /* 
@@ -43,41 +82,32 @@ impl Mapper0 {
     }
 }
 
-enum Mapper0Location<'a> {
-    Ram((&'a RefCell<Vec<u8>>, u16)),
-    Rom(&'a u8)
-}
+pub struct Mapper0Ram<'a>(&'a RefCell<Vec<u8>>, u16);
 
-impl MemLocation for Mapper0Location<'_> {
+impl<'a> MemLocation<'a> for Mapper0Ram<'_> {
     fn read(&mut self) -> u8 {
-        match self {
-            Mapper0Location::Ram((data, addr)) => data.borrow()[*addr as usize],
-            Mapper0Location::Rom(t) => **t,
-        }
+        self.0.borrow()[self.1 as usize]
     }
 
     fn write(&mut self, value: u8) {
-        match self {
-            Mapper0Location::Ram((data, addr)) => data.borrow_mut()[*addr as usize] = value,
-            Mapper0Location::Rom(_) => println!("Attempted write to ROM"),
-        }
+        self.0.borrow_mut()[self.1 as usize] = value;
     }
 }
 
 impl Mapped for Mapper0 {
-    fn mem_cpu<'a>(&'a self, addr: u16) -> Box<dyn MemLocation + 'a> {
+    fn mem_cpu<'a>(&'a self, addr: u16) -> MapperResult<'a> {
         let prg_rom_len = self.prg_rom.len();
         match addr {
             0x4020..=0x5FFF => panic!("CPU Read from unmapped cart memory at {:#06X}", addr),
-            0x6000..=0x7FFF => Box::new(Mapper0Location::<'a>::Ram((&self.prg_ram, (addr - 0x6000)))),
-            0x8000..=0xFFFF => Box::new(Mapper0Location::<'a>::Rom(&self.prg_rom[(addr - 0x8000) as usize % prg_rom_len])),
+            0x6000..=0x7FFF => Mapper0Ram(&self.prg_ram, (addr - 0x6000)).into(),
+            0x8000..=0xFFFF => RomLocation{ mem: &self.prg_rom[(addr - 0x8000) as usize % prg_rom_len] }.into(),
             _ => panic!("CPU access to memory not in cart at {:#06X}", addr),
         }
     }
 
-    fn mem_ppu<'a>(&'a self, addr: u16) -> Box<dyn MemLocation + 'a> {
+    fn mem_ppu<'a>(&'a self, addr: u16) -> MapperResult<'a> {
         match addr {
-            0x0000..=0x1FFF => Box::new(Mapper0Location::<'a>::Rom(&self.chr_rom[addr as usize])),
+            0x0000..=0x1FFF => RomLocation { mem: &self.chr_rom[addr as usize] }.into(),
             _ => panic!("PPU access to memory not in cart at {:#06X}", addr),
         }
     }
@@ -174,12 +204,12 @@ impl Mapper1 {
     }
 }
 
-enum Mapper1Location<'a> {
+pub enum Mapper1Location<'a> {
     Ram((&'a RefCell<Vec<u8>>, u16)),
     Mmio((&'a Mapper1, u16))
 }
 
-impl MemLocation for Mapper1Location<'_> {
+impl<'a> MemLocation<'a> for Mapper1Location<'a> {
     fn read(&mut self) -> u8 {
         match self {
             Mapper1Location::Ram((t, addr)) => t.borrow()[*addr as usize],
@@ -266,9 +296,18 @@ impl MemLocation for Mapper1Location<'_> {
 
                                 println!("Modes are now: {:?}, {:?}, {:?}", data.mirror_mode, data.prg_rom_mode, data.chr_mode);
                             },
-                            1 => data.chr_bank_0 = data.shifter,
-                            2 => data.chr_bank_1 = data.shifter,
-                            3 => data.prg_bank = data.shifter,
+                            1 => {
+                                println!("Set CHR bank 0 to {}", data.shifter);
+                                data.chr_bank_0 = data.shifter;
+                            },
+                            2 => {
+                                println!("Set CHR bank 1 to {}", data.shifter);
+                                data.chr_bank_1 = data.shifter;
+                            }
+                            3 => {
+                                println!("Set PRG bank to {}", data.shifter);
+                                data.prg_bank = data.shifter;
+                            },
                             _ => unreachable!(),
                         }
 
@@ -282,24 +321,27 @@ impl MemLocation for Mapper1Location<'_> {
 }
 
 impl Mapped for Mapper1 {
-    fn mem_cpu<'a>(&'a self, addr: u16) -> Box<dyn MemLocation + 'a> {
+    fn mem_cpu<'a>(&'a self, addr: u16) -> MapperResult<'a> {
         match addr {
             0x4020..=0x5FFF => {
                 println!("Returning wrapped from unmapped address {:#06X}", addr);
+                if addr == 0x5B68 {
+                    panic!();
+                }
                 self.mem_cpu(addr + 0x2000)
             },
             0x6000..=0x7FFF => {
                 if self.data.borrow().prg_bank & (1 << 4) != 0 {
                     panic!("RAM is disabled")
                 }
-                Box::new(Mapper1Location::Ram((&self.prg_ram, (addr - 0x6000))))
+                Mapper1Location::Ram((&self.prg_ram, (addr - 0x6000))).into()
             },
-            0x8000..=0xFFFF => Box::new(Mapper1Location::Mmio((self, addr))),
+            0x8000..=0xFFFF => Mapper1Location::Mmio((self, addr)).into(),
             _ => panic!(),
         }
     }
 
-    fn mem_ppu<'a>(&'a self, addr: u16) -> Box<dyn MemLocation + 'a> {
+    fn mem_ppu<'a>(&'a self, addr: u16) -> MapperResult<'a> {
         if addr >= 0x2000 {
             panic!();
         }
@@ -317,14 +359,14 @@ impl Mapped for Mapper1 {
                 };
 
                 let bank_start = 0x1000 * (bank_select as usize);
-                Box::new(Mapper1Location::Ram((&self.chr_rom, addr + bank_start as u16)))
+                Mapper1Location::Ram((&self.chr_rom, addr + bank_start as u16)).into()
             },
             ChrMode::DoubleSize => {
                 let bank_select = data.chr_bank_0 >> 1;
 
                 let bank_start = 0x2000 * (bank_select as usize);
 
-                Box::new(Mapper1Location::Ram((&self.chr_rom, addr + bank_start as u16)))
+                Mapper1Location::Ram((&self.chr_rom, addr + bank_start as u16)).into()
             },
         }
     }
@@ -351,24 +393,23 @@ impl Mapper3 {
     }
 }
 
-enum Mapper3Location<'a> {
+pub enum Mapper3Location<'a> {
     CPU((&'a RefCell<u8>, u8)),
     PPU((&'a RefCell<Vec<u8>>, u16)),
 }
 
-impl MemLocation for Mapper3Location<'_> {
+impl<'a> MemLocation<'a> for Mapper3Location<'a> {
     fn read(&mut self) -> u8 {
         match self {
             Mapper3Location::CPU((_, d)) => *d,
-            Mapper3Location::PPU((d, addr)) => d.borrow()[*addr as usize],
+            Mapper3Location::PPU((d, addr)) => d.borrow()[*addr as usize % d.borrow().len()],
         }
     }
 
     fn write(&mut self, value: u8) {
         match self {
             Mapper3Location::CPU((bank_select, _)) => {
-                assert!(value <= 3);
-                *bank_select.borrow_mut() = value;
+                *bank_select.borrow_mut() = value % 4;
             },
             Mapper3Location::PPU((d, addr)) => {
                 d.borrow_mut()[*addr as usize] = value;
@@ -378,20 +419,23 @@ impl MemLocation for Mapper3Location<'_> {
 }
 
 impl Mapped for Mapper3 {
-    fn mem_cpu<'a>(&'a self, addr: u16) -> Box<dyn MemLocation + 'a> {
+    fn mem_cpu<'a>(&'a self, addr: u16) -> MapperResult<'a> {
         if (0x8000..=0xFFFF).contains(&addr) {
             let d = self.prg_rom[(addr - 0x8000) as usize];
-            Box::new(Mapper3Location::<'a>::CPU((&self.bank_select, d)))
+            Mapper3Location::<'a>::CPU((&self.bank_select, d)).into()
         }
         else {
             panic!()
         }
     }
 
-    fn mem_ppu<'a>(&'a self, addr: u16) -> Box<dyn MemLocation + 'a> {
+    fn mem_ppu<'a>(&'a self, addr: u16) -> MapperResult<'a> {
         match addr {
             0x0000..=0x1FFF => {
-                Box::new(Mapper3Location::<'a>::PPU((&self.chr, addr)))
+                let selected = *self.bank_select.borrow();
+                let bank_start = selected as u16 * 0x2000;
+                let mapped_addr = addr + bank_start;
+                Mapper3Location::<'a>::PPU((&self.chr, mapped_addr)).into()
             },
             _ => panic!(),
         }

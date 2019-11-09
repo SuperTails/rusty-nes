@@ -1,9 +1,9 @@
-use sdl2::pixels::Color;
-use sdl2::rect::Point;
-use super::SDLSystem;
-use crate::mapper::Mapped;
+use sdl2::pixels::{Color, PixelFormatEnum};
+use sdl2::rect::{Point, Rect};
+use sdl2::surface::Surface;
+use crate::Context;
+use crate::mem_location::MemLocation;
 use crate::cpu::CPU;
-use std::cell::RefCell;
 use std::time::Instant;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -12,7 +12,7 @@ struct PalettedColor(pub u8);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct NTSCColor(pub u8);
 
-bitfield!{
+bitfield! {
     #[derive(Clone, Copy)]
     pub struct OAMEntryAttrs(u8);
     impl Debug;
@@ -78,36 +78,6 @@ fn get_palette_index(attr_table: &[u8], tile_row: u8, tile_col: u8) -> u8 {
     }
 }
 
-fn render_pattern_tables(sdl_system: &mut SDLSystem, mapper: &mut dyn Mapped) {
-    for table in 0..2 {
-        for row in 0..16 {
-            for col in 0..16 {
-                let base_addr = (row * 16 + col) * 16 + 0x1000 * table;
-                for y in 0..8 {
-                    for x in 0..8 {
-                        let color = color_pattern_mapped(mapper, base_addr, y as u8, x as u8).0 * 85;
-                        let p_x = x + col * 8 + table * 128 + 256;
-                        let p_y = y + row * 8;
-
-                        sdl_system.canvas().set_draw_color(Color::RGB(color, color, color));
-                        sdl_system.canvas().draw_point(Point::new(p_x as i32, p_y as i32)).unwrap();
-                    }
-                }
-            }
-        }
-    }
-}
-
-fn color_pattern_mapped(mapper: &mut dyn Mapped, base_addr: u16, row: u8, col: u8) -> PalettedColor {
-    assert!(row < 8);
-    assert!(col < 8);
-
-    let lo_color = mapper.mem_ppu(base_addr + row as u16).read();
-    let hi_color = mapper.mem_ppu(base_addr + (row + 8) as u16).read();
-
-    PalettedColor(((hi_color >> (7 - col)) & 1) << 1 | ((lo_color >> (7 - col)) & 1))
-}
-
 pub struct PPU {
     pub ctrl: PPUCtrl,
 
@@ -116,24 +86,28 @@ pub struct PPU {
     pub last_value: u8,
 
     /* TODO: Sprite zero hit, Sprite Overflow, Proper VBlank */
-    pub status: RefCell<u8>,
+    pub status: u8,
 
     pub cycles: u128,
-    pub address: RefCell<u16>,
-    pub scroll: RefCell<u16>,
+    pub address: u16,
+    pub scroll: u16,
 
-    pub name_tables: RefCell<Vec<u8>>,
+    pub name_tables: Vec<u8>,
 
-    pub palette_idxs: RefCell<[u8; 0x20]>,
+    pub palette_idxs: [u8; 0x20],
 
-    pub oam_addr: RefCell<u8>,
-    pub oam: RefCell<[OAMEntry; 64]>,
+    pub oam_addr: u8,
+    pub oam: [OAMEntry; 64],
 
     pub dma_request: Option<u8>,
+
+    pub target: Surface<'static>,
 
     prev_nmi_state: bool,
 
     last_frames: Vec<Instant>,
+
+    vblank_occurred: bool,
 
     scanline: usize,
     pixel: usize,
@@ -142,7 +116,11 @@ pub struct PPU {
 }
 
 impl PPU {
-    pub fn new() -> PPU {
+    fn make_target(pixel_format: &PixelFormatEnum) -> Surface<'static> {
+        Surface::new(256, 240, *pixel_format).unwrap()
+    }
+
+    pub fn new(pixel_format: &PixelFormatEnum) -> PPU {
         PPU {
             dma_request: None,
             prev_nmi_state: false,
@@ -150,22 +128,88 @@ impl PPU {
             scanline: 0,
             pixel: 0,
             mask: 0,
+            vblank_occurred: false,
             last_value: 0,
             last_frames: [Instant::now(); 10].to_vec(),
-            status: RefCell::new(0),
+            target: PPU::make_target(pixel_format),
+            status: 0,
             cycles: 0,
-            address: RefCell::new(0),
-            scroll: RefCell::new(0),
-            name_tables: RefCell::new([0; 0x800].to_vec()),
-            palette_idxs: RefCell::new([0; 0x20]),
-            oam_addr: RefCell::new(0),
+            address: 0,
+            scroll: 0,
+            name_tables: [0; 0x800].to_vec(),
+            palette_idxs: [0; 0x20],
+            oam_addr: 0,
             colors: PPU::get_colors(),
-            oam: RefCell::new([OAMEntry::default(); 64]),
+            oam: [OAMEntry::default(); 64],
         }
     }
 
+    fn render_pattern_tables(&self, context: &Context) {
+        for table in 0..2 {
+            for row in 0..16 {
+                for col in 0..16 {
+                    let base_addr = (row * 16 + col) * 16 + 0x1000 * table;
+                    for y in 0..8 {
+                        for x in 0..8 {
+                            let color = self.color_pattern_mapped(base_addr, y as u8, x as u8, context).0 * 85;
+                            let p_x = x + col * 8 + table * 128 + 256;
+                            let p_y = y + row * 8;
+
+                            context.sdl_system.borrow_mut().canvas().set_draw_color(Color::RGB(color, color, color));
+                            context.sdl_system.borrow_mut().canvas().draw_point(Point::new(p_x as i32, p_y as i32)).unwrap();
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn color_pattern_mapped(&self, base_addr: u16, row: u8, col: u8, context: &Context) -> PalettedColor {
+        assert!(row < 8);
+        assert!(col < 8);
+
+        let lo_color = self.read(base_addr + row as u16, context);
+        let hi_color = self.read(base_addr + (row + 8) as u16, context);
+
+        PalettedColor(((hi_color >> (7 - col)) & 1) << 1 | ((lo_color >> (7 - col)) & 1))
+    }
+
+    pub fn read(&self, addr: u16, context: &Context) -> u8 {
+        match addr % 0x4000 {
+            0x0000..=0x1FFF => context.mapper.mem_ppu(addr).read(),
+            0x2000..=0x2FFF => self.name_tables[context.mapper.map_nametable(addr) as usize - 0x2000],
+            0x3000..=0x3EFF => self.read(addr - 0x1000, context),
+            0x3F10 => self.palette_idxs[0x0],
+            0x3F14 => self.palette_idxs[0x4],
+            0x3F18 => self.palette_idxs[0x8],
+            0x3F1C => self.palette_idxs[0xC],
+            0x3F00..=0x3FFF => self.palette_idxs[((addr - 0x3F00) % 0x20) as usize],
+            _ => unreachable!(),
+        }
+    }
+
+    pub fn write(&mut self, mut addr: u16, value: u8, context: &Context) {
+        addr %= 0x4000;
+
+        match addr {
+            0x0000..=0x1FFF => context.mapper.mem_ppu(addr).write(value),
+            0x2000..=0x2FFF => self.name_tables[context.mapper.map_nametable(addr) as usize - 0x2000] = value,
+            0x3000..=0x3EFF => self.write(addr - 0x1000, value, context),
+            0x3F10 => self.palette_idxs[0x0] = value,
+            0x3F14 => self.palette_idxs[0x4] = value,
+            0x3F18 => self.palette_idxs[0x8] = value,
+            0x3F1C => self.palette_idxs[0xC] = value,
+            0x3F00..=0x3FFF => self.palette_idxs[((addr - 0x3F00) % 0x20) as usize] = value,
+            _ => unreachable!(),
+        }
+    }
+
+    pub fn vblank_occurred(&mut self) -> bool {
+        std::mem::replace(&mut self.vblank_occurred, false)
+    }
+
     pub fn nmi_falling(&mut self) -> bool {
-        let nmi_occurred = *self.status.borrow() & 0x80 != 0;
+        let nmi_occurred = self.status & 0x80 != 0;
 
         let new_state = self.ctrl.nmi_enabled() && nmi_occurred;
 
@@ -185,7 +229,7 @@ impl PPU {
      *  1 CPU cycle = 3 PPU cycles
      *
      */
-    pub fn next(&mut self, cpu_cycles: usize, sdl_system: &mut SDLSystem, mapper: &mut dyn Mapped, cpu: &CPU) {
+    pub fn next(&mut self, cpu_cycles: usize, context: &Context, cpu: &CPU) {
         for _ in 0..(3 * cpu_cycles) {
             if let Some(addr) = self.dma_request.take() {
                 self.dma(addr, cpu);
@@ -201,68 +245,81 @@ impl PPU {
 
             if (0..=240).contains(&self.scanline) {
                 if (257..=320).contains(&self.pixel) {
-                    *self.oam_addr.borrow_mut() = 0;
+                    self.oam_addr = 0;
                 }
             }
 
             match self.scanline {
                 0..=0       => { /* Pre-render scanline */
                     // TODO: Clear sprite-0 hit at the right time
-                    *self.status.borrow_mut() &= !(1 << 6);
+                    self.status &= !(1 << 6);
                 },
                 1..=240     => { /* Render scanline */
                     // Rendering
-                    self.for_each_pixel(sdl_system, mapper);
+                    self.for_each_pixel(context);
                 },
                 241..=241   => { /* Idle scanline */ },
                 242..=261   => { /* Vertical blanking line */
                     // Trigger NMI
                     if self.scanline == 242 && self.pixel == 1 {
-                        println!("VBlank");
+                        //println!("VBlank");
+                        
+                        self.vblank_occurred = true;
                                         
                         // CPU Clock rate is 1789772.72 Hz
                         
-                        let frame_time = (self.last_frames[0].elapsed().as_micros() as f64 / self.last_frames.len() as f64) / 1000.0;
-                        let framerate = 1000.0 / frame_time;
+                        
+                        while self.last_frames[0].elapsed().as_micros() / 10 < 16_666 {
+                               std::thread::sleep(std::time::Duration::from_micros(100));
+                        }
+
+                        //let frame_time = (self.last_frames[0].elapsed().as_micros() as f64 / self.last_frames.len() as f64) / 1000.0;
 
                         self.last_frames.remove(0);
                         self.last_frames.push(Instant::now());
 
-                        println!("Framerate: {}", framerate);
+                        //let framerate = 1000.0 / frame_time;
+                        //println!("Framerate: {}", framerate);
 
-                        render_pattern_tables(sdl_system, mapper);
-                        self.render_oam(sdl_system, mapper);
+                        //self.render_pattern_tables(context);
+                        //self.render_oam(context);
                         /*for y in (0..(240 / 32)).map(|y| y * 32) {
                             for x in (0..(256 / 32)).map(|x| x * 32) {
                                 sdl_system.canvas().draw_rect(sdl2::rect::Rect::new(x as i32, y as i32, 32, 32)).unwrap();
                             }
                         }*/
+                        let mut sdl_system = context.sdl_system.borrow_mut();
+                        let creator = sdl_system.canvas().texture_creator();
+                        let tex = creator.create_texture_from_surface(std::mem::replace(&mut self.target, PPU::make_target(&sdl_system.canvas().default_pixel_format()))).unwrap();
+                        sdl_system.canvas().copy(&tex, None, Rect::new(0, 0, 256, 240));
                         sdl_system.present();
-                        *self.status.borrow_mut() |= 1 << 7;
+                        sdl_system.canvas().set_draw_color(Color::from((0, 0, 0)));
+                        sdl_system.canvas().clear();
+                        self.status |= 1 << 7;
                     }
                 },
                 /* 262 */ _ => { /* Pre-render scanline */
                     self.scanline = 0;
                     /* TODO: Check if this is the right time to clear nmi_occurred */
-                    *self.status.borrow_mut() &= !0x80;
+                    self.status &= !0x80;
                 },
             }
         }
     }
 
-    fn render_oam(&self, sdl_system: &mut SDLSystem, mapper: &mut dyn Mapped) {
+    fn render_oam(&self, context: &Context) {
         for row in 0..8 {
             for col in 0..8 {
-                let entry = &self.oam.borrow()[row * 8 + col];
+                let entry = &self.oam[row * 8 + col];
                 let height = if self.ctrl.sprite_size() { 16 } else { 8 };
                 for y in 0..height {
                     for x in 0..8 {
-                        let (_, color, _) = self.get_sprite_pixel(entry, x as u8, y as u8, mapper);
+                        let (_, color, _) = self.get_sprite_pixel(entry, x as u8, y as u8, context);
 
-                        sdl_system.canvas().set_draw_color(color);
+                        context.sdl_system.borrow_mut().canvas().set_draw_color(color);
                         let p_x = x + col * 8 + 256;
                         let p_y = y + row * height + 128;
-                        sdl_system.canvas().draw_point(Point::new(p_x as i32, p_y as i32)).unwrap();
+                        context.sdl_system.borrow_mut().canvas().draw_point(Point::new(p_x as i32, p_y as i32)).unwrap();
                     }
                 }
             }
@@ -275,7 +332,7 @@ impl PPU {
 
         let idx = tile_color.0 | palette_idx << 2 | (sprite as u8) << 4;
 
-        self.palette_idxs.borrow()[idx as usize]
+        self.palette_idxs[idx as usize]
     }
 
     fn get_colors() -> Vec<Color> {
@@ -289,14 +346,10 @@ impl PPU {
 
     fn selected_name_table(&self) -> usize {
         /* TODO: Vertical/horizontal mirroring */
-        let x_scroll = (*self.scroll.borrow() >> 8) as usize;
-        let y_scroll = (*self.scroll.borrow() & 0xFF) as usize;
+        let x_scroll = (self.scroll >> 8) as usize;
+        let y_scroll = (self.scroll & 0xFF) as usize;
         let selected = (self.ctrl.nametable_addr() & /*3*/ 1) as usize * 0x400 + 32 * (y_scroll / 8) + (x_scroll / 8);
         selected
-    }
-
-    fn selected_attr_table(&self) -> usize {
-        self.selected_name_table() + 0x400 - 64
     }
 
     fn selected_patt_table_bg(&self) -> u16 {
@@ -308,29 +361,29 @@ impl PPU {
     }
 
 
-    fn get_background_color(&self, mapper: &mut dyn Mapped, x: usize, y: usize) -> (PalettedColor, Color) {
+    fn get_background_color(&self, x: usize, y: usize, context: &Context) -> (PalettedColor, Color) {
         let row = y / 8;
         let col = x / 8;
 
-        let name_tables = self.name_tables.borrow();
-        let name_table = &name_tables[self.selected_name_table()..self.selected_name_table()+0x400];
-        let attr_table = self.selected_attr_table();
+        let selected = context.mapper.map_nametable(self.selected_name_table() as u16 + 0x2000) as usize - 0x2000;
+
+        let name_table = &self.name_tables[selected..selected+0x400];
         let pattern_table = self.selected_patt_table_bg();
 
         let tile_name = name_table[row * 32 + col];
 
-        let palette_idx = get_palette_index(&name_table[attr_table..attr_table+64], row as u8, col as u8);
+        let palette_idx = get_palette_index(&name_table[0x3C0..0x400], row as u8, col as u8);
 
         let base_addr = pattern_table + 16 * tile_name as u16;
 
-        let color = color_pattern_mapped(mapper, base_addr, (y % 8) as u8, (x % 8) as u8);
+        let color = self.color_pattern_mapped(base_addr, (y % 8) as u8, (x % 8) as u8, context);
 
         let c = self.get_color(color, palette_idx, false);
 
         (color, self.colors[c as usize])
     }
 
-    fn get_sprite_pixel(&self, object: &OAMEntry, mut s_x: u8, mut s_y: u8, mapper: &mut dyn Mapped) -> (PalettedColor, Color, bool) {
+    fn get_sprite_pixel(&self, object: &OAMEntry, mut s_x: u8, mut s_y: u8, context: &Context) -> (PalettedColor, Color, bool) {
         let max_height = if self.ctrl.sprite_size() {
             16
         }
@@ -368,95 +421,105 @@ impl PPU {
         };
 
         let base_addr = selected_patt_table + 16 * index as u16;
-        let sprite_color = color_pattern_mapped(mapper, base_addr, s_y, s_x);
+        let sprite_color = self.color_pattern_mapped(base_addr, s_y, s_x, context);
 
         let color = self.colors[self.get_color(sprite_color, object.attrs.palette_idx(), true) as usize];
 
         (sprite_color, color, object.attrs.priority())
     }
 
-    fn for_each_pixel(&mut self, sdl_system: &mut SDLSystem, mapper: &mut dyn Mapped) {
-        let scroll = self.scroll.borrow();
+    fn for_each_pixel(&mut self, context: &Context) {
+        let scroll = self.scroll;
 
-        if self.pixel + ((*scroll >> 8) % 8) as usize >= 256 {
+        if self.pixel + ((scroll >> 8) % 8) as usize >= 256 {
             return;
         }
 
-        let bg_color = self.get_background_color(mapper, self.pixel + ((*scroll >> 8) % 8) as usize, self.scanline - 1 + (*scroll as usize & 0xFF) % 8);
+        let bg_color = self.get_background_color(self.pixel + ((scroll >> 8) % 8) as usize, self.scanline - 1 + (scroll as usize & 0xFF) % 8, context);
 
-        sdl_system.canvas().set_scale(2.0, 2.0).unwrap();
-        let mut sprite_colors = Vec::new();
-
-        for object in self.oam.borrow().iter() {
-            if self.scanline < 2 {
-                break;
-            }
-
+        let mut sprite_color: Option<(PalettedColor, Color, bool)> = None;
+        
+        if self.scanline >= 2 {
             let max_height = if self.ctrl.sprite_size() { 16 } else { 8 };
-
-            if (object.x as usize..object.x as usize + 8).contains(&self.pixel) {
-                    if (object.y as usize..object.y as usize + max_height).contains(&(self.scanline - 2)) {
+            for object in self.oam.iter() {
+                if object.x as usize <= self.pixel && self.pixel < object.x as usize + 8 {
+                    if object.y as usize <= self.scanline - 2 && self.scanline - 2 < object.y as usize + max_height {
                         let s_x = self.pixel as u8 - object.x;
                         let s_y = (self.scanline - 2) as u8 - object.y;
-                        sprite_colors.push(self.get_sprite_pixel(object, s_x, s_y, mapper))
+                        sprite_color = Some(self.get_sprite_pixel(object, s_x, s_y, context));
+                        break;
                     }
                 }
             }
+        }
     
         // TODO: Properly sort sprites
-        let output = if sprite_colors.len() == 0 {
-            if (bg_color.0).0 == 0 {
-                self.colors[self.palette_idxs.borrow()[0] as usize]
-            }
-            else {
-                bg_color.1
-            }
-        }
-        else {
-            let sprite_color = &sprite_colors[0];
+        let output = if let Some(sprite_color) = sprite_color {
 
             // TODO: I think this should only be triggered once
             if (bg_color.0).0 != 0 && (sprite_color.0).0 != 0 {
-                *self.status.borrow_mut() |= 1 << 6;
+                self.status |= 1 << 6;
             }
 
             // TODO: Check sprite-0 hit conditions properly
             if (bg_color.0).0 != 0 && (sprite_color.0).0 != 0 {
-                *self.status.borrow_mut() |= 1 << 6;
+                self.status |= 1 << 6;
             }
 
             match ((bg_color.0).0, (sprite_color.0).0, sprite_color.2) {
-                (0, 0, _)     => self.colors[self.palette_idxs.borrow()[0] as usize],
+                (0, 0, _)     => self.colors[self.palette_idxs[0] as usize],
                 (0, _, _)     => sprite_color.1,
                 (_, 0, _)     => bg_color.1,
                 (_, _, false) => sprite_color.1,
                 (_, _, true)  => bg_color.1,
 
             }
+        }
+        else {
+            if (bg_color.0).0 == 0 {
+                self.colors[self.palette_idxs[0] as usize]
+            }
+            else {
+                bg_color.1
+            }
         };
 
-        sdl_system.canvas().set_draw_color(output);
-        sdl_system.canvas().draw_point(Point::new(self.pixel as i32, (self.scanline - 1) as i32)).unwrap();
+        //context.sdl_system.borrow_mut().canvas().set_draw_color(output);
+        //context.sdl_system.borrow_mut().canvas().draw_point(Point::new(self.pixel as i32, (self.scanline - 1) as i32)).unwrap();
+        
+        let pixel_format = self.target.pixel_format_enum();
+        let size_per_pixel = pixel_format.byte_size_per_pixel();
+        let base = (self.pixel + (self.scanline - 1) * 256) * size_per_pixel;
+        self.target.with_lock_mut(|data| {
+            let pix = &mut data[base..base+size_per_pixel];
+            pix[0] = output.b; pix[1] = output.g; pix[2] = output.r; 
+            //match pixel_format {
+            //    PixelFormatEnum::RGBA32 => { data[0] = output.r; data[1] = output.g; data[2] = output.b; },
+            //    PixelFormatEnum::ARGB32 => { data[1] = output.r; data[2] = output.g; data[3] = output.b; },
+            //    PixelFormatEnum::BGRA32 => { data[0] = output.b; data[1] = output.g; data[2] = output.r; },
+            //    PixelFormatEnum::ABGR32 => { data[1] = output.b; data[2] = output.g; data[3] = output.r; },
+            //}
+        });
     }
 
     pub fn incr_address(&mut self) {
         if self.ctrl.increment_mode() {
-            *self.address.borrow_mut() += 32;
+            self.address += 32;
         }
         else {
-            *self.address.borrow_mut() += 1;
+            self.address += 1;
         }
     }
 
 
-    pub fn dma(&self, addr: u8, cpu: &CPU) {
+    pub fn dma(&mut self, addr: u8, cpu: &CPU) {
         /* TODO: Determine if this should depend on oam_addr */
         //print!("{:#06X}, OAM: [", addr);
         for idx in 0..64 {
             let full_addr = (addr as u16) << 8 | (idx * 4);
 
             // TODO: Access properly
-            self.oam.borrow_mut()[idx as usize] = OAMEntry {
+            self.oam[idx as usize] = OAMEntry {
                 y: cpu.ram[(full_addr + 0) as usize],
                 index: cpu.ram[(full_addr + 1) as usize],
                 attrs: OAMEntryAttrs(cpu.ram[(full_addr + 2) as usize]),

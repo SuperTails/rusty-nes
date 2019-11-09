@@ -818,9 +818,9 @@ fn JMP_abs(_: &Context, cpu: &mut CPU, addr: u16) { cpu.pc = addr - 3; }
 fn JMP_ind(ctx: &Context, cpu: &mut CPU, addr: u16) { cpu.pc = cpu.read_wide(addr, ctx) - 3; }
 
 fn NOP(_: &Context, _: &mut CPU) {}
-fn DOP_IMM(_: &Context, _: &mut CPU, _: u8) {}
+fn DOP_imm(_: &Context, _: &mut CPU, _: u8) {}
 fn DOP(_: &Context, _: &mut CPU, _: u16) {}
-fn TOP_ADDR(_: &Context, _: &mut CPU, _: u16) {}
+fn TOP_addr(_: &Context, _: &mut CPU, _: u16) {}
 
 inst_list! {
     { BRK 0x00 &NOP }
@@ -831,7 +831,7 @@ inst_list! {
     { BVC 0x50 rel &BVC }
     { RTS 0x60 &RTS }
     { BVS 0x70 rel &BVS }
-    { DOP 0x80 imm &DOP_IMM }
+    { DOP 0x80 imm &DOP_imm }
     { BCC 0x90 rel &BCC }
     { LDY 0xA0 imm &LDY_imm }
     { BCS 0xB0 rel &BCS }
@@ -847,7 +847,9 @@ inst_list! {
     { LDA 0xA1 cc_01_all_addressed &LDA }
     { CMP 0xC1 cc_01_all_addressed &CMP }
     { SBC 0xE1 cc_01_all_addressed &SBC }
+    { SKB 0x82 imm &DOP_imm }
     { LDX 0xA2 imm &LDX_imm }
+    { SKB 0xC2 imm &DOP_imm }
     { SLO 0x03 cc_01_all_addressed &SLO }
     { RLA 0x23 cc_01_all_addressed &RLA }
     { SRE 0x43 cc_01_all_addressed &SRE }
@@ -925,19 +927,19 @@ inst_list! {
     { DCP 0xDB abs,Y &DCP }
     { SBC 0xEB imm &SUB }
     { ISC 0xFB abs,Y &ISC }
-    { TOP 0x0C abs abs,X &TOP_ADDR }
+    { TOP 0x0C abs abs,X &TOP_addr }
     { BIT 0x2C abs &BIT }
-    { TOP 0x3C abs,X &TOP_ADDR }
+    { TOP 0x3C abs,X &TOP_addr }
     { JMP 0x4C abs &JMP_abs }
-    { TOP 0x5C abs,X &TOP_ADDR }
+    { TOP 0x5C abs,X &TOP_addr }
     { JMP 0x6C ind &JMP_ind }
-    { TOP 0x7C abs,X &TOP_ADDR }
+    { TOP 0x7C abs,X &TOP_addr }
     { STY 0x8C abs &STY }
     { LDY 0xAC abs abs,X &LDY }
     { CPY 0xCC abs &CPY }
-    { TOP 0xDC abs,X &TOP_ADDR }
+    { TOP 0xDC abs,X &TOP_addr }
     { CPX 0xEC abs &CPX }
-    { TOP 0xFC abs,X &TOP_ADDR }
+    { TOP 0xFC abs,X &TOP_addr }
     { ASL 0x0E abs abs,X &ASL }
     { ROL 0x2E abs abs,X &ROL }
     { LSR 0x4E abs abs,X &LSR }

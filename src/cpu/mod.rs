@@ -149,7 +149,7 @@ impl CPU {
         self.pc = (self.read(0xFFFB, ctx) as u16) << 8 | self.read(0xFFFA, ctx) as u16;
         self.state = State::Nmi;
         
-        println!("NMI triggered, PC is now {:#06X} ({:#04X})", self.pc, self.read(self.pc, ctx));
+        //println!("NMI triggered, PC is now {:#06X} ({:#04X})", self.pc, self.read(self.pc, ctx));
     }
 
 	pub fn try_irq(&mut self, ctx: &Context) -> bool {

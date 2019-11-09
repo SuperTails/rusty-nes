@@ -79,7 +79,7 @@ impl Rom {
 
         let version = header[7] >> 2;
 
-        if version != 3 && version != 0 {
+        if version != 2 && version != 0 {
             return Err(Box::new(RomReadError { error: format!("Incorrect file version {}", (header[7] >> 2) & 0x3) }));
         }
 

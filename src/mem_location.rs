@@ -5,11 +5,14 @@ use crate::controller::Controller;
 use crate::Context;
 use std::cell::RefCell;
 use std::num::Wrapping;
+use enum_dispatch::enum_dispatch;
+use crate::mapper::{AnyMemLocation, Mapper0Ram, Mapper1Location, Mapper3Location};
 
-pub trait MemLocation {
-    fn read(&mut self) -> u8;
+#[enum_dispatch(AnyMemLocation)]
+pub trait MemLocation<'a> {
+    fn read(&'a mut self) -> u8;
 
-    fn write(&mut self, value: u8);
+    fn write(&'a mut self, value: u8);
 }
 
 pub struct CPURamLoc<'a> {
@@ -17,7 +20,7 @@ pub struct CPURamLoc<'a> {
     pub addr: u16,
 }
 
-impl MemLocation for CPURamLoc<'_> {
+impl<'a> MemLocation<'a> for CPURamLoc<'a> {
     fn read(&mut self) -> u8 {
         self.cpu.borrow().ram[self.addr as usize]
     }
@@ -33,7 +36,7 @@ pub struct RamLocation<'a> {
     pub addr: u16,
 }
 
-impl MemLocation for RamLocation<'_> {
+impl<'a> MemLocation<'a> for RamLocation<'a> {
     fn read(&mut self) -> u8 {
         self.mem.borrow()[self.addr as usize]
     }
@@ -48,13 +51,13 @@ pub struct RomLocation<'a> {
     pub mem: &'a u8
 }
 
-impl MemLocation for RomLocation<'_> {
+impl<'a> MemLocation<'a> for RomLocation<'a> {
     fn read(&mut self) -> u8 {
         *self.mem
     }
 
     fn write(&mut self, _value: u8) {
-        panic!("Attempted to write to a location in ROM!");
+        println!("Write to ROM??");
     }
 }
 
@@ -63,13 +66,13 @@ pub struct PPUNametable<'a> {
     pub addr: usize,
 }
 
-impl MemLocation for PPUNametable<'_> {
+impl<'a> MemLocation<'a> for PPUNametable<'a> {
     fn read(&mut self) -> u8 {
         unimplemented!()
     }
 
     fn write(&mut self, value: u8) {
-        self.ppu.borrow().name_tables.borrow_mut()[self.addr] = value;
+        self.ppu.borrow_mut().name_tables[self.addr] = value;
     }
 
 }
@@ -79,13 +82,13 @@ pub struct PPUPalette<'a> {
     pub addr: usize,
 }
 
-impl MemLocation for PPUPalette<'_> {
+impl<'a> MemLocation<'a> for PPUPalette<'a> {
     fn read(&mut self) -> u8 {
-        self.ppu.borrow().palette_idxs.borrow()[self.addr]
+        self.ppu.borrow().palette_idxs[self.addr]
     }
 
     fn write(&mut self, value: u8) {
-        self.ppu.borrow().palette_idxs.borrow_mut()[self.addr] = value;
+        self.ppu.borrow_mut().palette_idxs[self.addr] = value;
     }
 }
 
@@ -108,19 +111,16 @@ pub enum PPURegInt {
     Dma = 14,
 }
 
-impl MemLocation for PPURegister<'_> {
+impl<'a> MemLocation<'a> for PPURegister<'a> {
     fn read(&mut self) -> u8 {
         let result = match self.reg {
             PPURegInt::Ctrl => self.ppu.borrow().ctrl.0,
             PPURegInt::Mask => self.ppu.borrow().mask,
-            PPURegInt::Status => *self.ppu.borrow().status.borrow_mut(),
+            PPURegInt::Status => self.ppu.borrow().status,
             PPURegInt::Oamdata => {
-                let ppu = self.ppu.borrow();
-                let mut oam_addr = ppu.oam_addr.borrow_mut();
-                let array_addr = *oam_addr / 4;
-                let oam = ppu.oam.borrow();
-                let entry = &oam[array_addr as usize];
-                let result = match *oam_addr % 4 {
+                let mut ppu = self.ppu.borrow_mut();
+                let entry = &ppu.oam[(ppu.oam_addr / 4) as usize];
+                let result = match ppu.oam_addr % 4 {
                     0 => entry.y,
                     1 => entry.index,
                     2 => entry.attrs.0,
@@ -128,7 +128,7 @@ impl MemLocation for PPURegister<'_> {
                     _ => unreachable!(),
                 };
 
-                *oam_addr = (Wrapping(*oam_addr) + Wrapping(1)).0;
+                ppu.oam_addr = ppu.oam_addr.wrapping_add(1); 
 
                 result
             },
@@ -136,8 +136,10 @@ impl MemLocation for PPURegister<'_> {
             PPURegInt::Addr |
             PPURegInt::Oamaddr => self.ppu.borrow().last_value,
             PPURegInt::Data => {
-                let result = self.context.ppu_address(*self.ppu.borrow().address.borrow()).read();
-                self.ppu.borrow_mut().incr_address();
+                let addr = self.ppu.borrow().address;
+                let mut ppu = self.ppu.borrow_mut();
+                let result = ppu.read(addr, self.context);
+                ppu.incr_address();
                 result
             },
             PPURegInt::Dma => {
@@ -164,16 +166,16 @@ impl MemLocation for PPURegister<'_> {
                 println!("Attempt to write to status")
             },
             PPURegInt::Oamaddr => {
-                *self.ppu.borrow().oam_addr.borrow_mut() = value;
+                self.ppu.borrow_mut().oam_addr = value;
             },
             PPURegInt::Oamdata => {
-                let ppu = self.ppu.borrow();
-                let mut oam_addr = ppu.oam_addr.borrow_mut();
+                let mut ppu = self.ppu.borrow_mut();
 
-                let array_addr = *oam_addr / 4;
-                let mut oam = ppu.oam.borrow_mut();
-                let entry = &mut oam[array_addr as usize];
-                match *oam_addr % 4 {
+                let entry = ppu.oam_addr / 4;
+                let byte = ppu.oam_addr % 4;
+
+                let entry = &mut ppu.oam[entry as usize];
+                match byte {
                     0 => entry.y = value,
                     1 => entry.index = value,
                     2 => entry.attrs = crate::ppu::OAMEntryAttrs(value),
@@ -181,26 +183,26 @@ impl MemLocation for PPURegister<'_> {
                     _ => unreachable!(),
                 };
 
-                *oam_addr = (Wrapping(*oam_addr) + Wrapping(1)).0;
+                ppu.oam_addr = (Wrapping(ppu.oam_addr) + Wrapping(1)).0;
             },
             PPURegInt::Scroll => {
-                let ppu = self.ppu.borrow();
-                let mut scroll = ppu.scroll.borrow_mut();
-                *scroll <<= 8;
-                *scroll |= value as u16;
+                let mut ppu = self.ppu.borrow_mut();
+                ppu.scroll <<= 8;
+                ppu.scroll |= value as u16;
             },
             PPURegInt::Addr => {
-                let ppu = self.ppu.borrow();
-                let mut address = ppu.address.borrow_mut();
-                *address <<= 8;
-                *address |= value as u16;
+                let mut ppu = self.ppu.borrow_mut();
+                ppu.address <<= 8;
+                ppu.address |= value as u16;
             },
             PPURegInt::Dma => {
                 self.ppu.borrow_mut().dma_request = Some(value);
             },
             PPURegInt::Data => {
-                self.context.ppu_address(*self.ppu.borrow().address.borrow()).write(value);
-                self.ppu.borrow_mut().incr_address();
+                let addr = self.ppu.borrow().address;
+                let mut ppu = self.ppu.borrow_mut();
+                ppu.write(addr, value, self.context);
+                ppu.incr_address();
             },
         }
     }
@@ -211,15 +213,13 @@ pub struct APURegister<'a> {
     pub register: usize,
 }
 
-impl MemLocation for APURegister<'_> {
+impl<'a> MemLocation<'a> for APURegister<'a> {
     fn read(&mut self) -> u8 {
-        0
-        //unimplemented!()
+        self.apu.borrow_mut().read(self.register as u8)
     }
 
-    fn write(&mut self, _value: u8) {
-        println!("Ignoring APU write");
-        //unimplemented!()
+    fn write(&mut self, value: u8) {
+        self.apu.borrow_mut().write(self.register as u8, value);
     }
 }
 
@@ -228,7 +228,7 @@ pub struct CTLRegister<'a> {
     pub register: usize,
 }
 
-impl MemLocation for CTLRegister<'_> {
+impl<'a> MemLocation<'a> for CTLRegister<'a> {
     fn read(&mut self) -> u8 {
         self.ctl.borrow_mut().read(self.register as u8)
     }
@@ -237,3 +237,4 @@ impl MemLocation for CTLRegister<'_> {
         self.ctl.borrow_mut().write(self.register as u8, value);
     }
 }
+
