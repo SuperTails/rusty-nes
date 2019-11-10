@@ -1,10 +1,10 @@
 #![allow(non_snake_case)]
 
+use super::CPU;
+use crate::Context;
 use std::cmp::Ordering;
 use std::num::Wrapping;
-use crate::Context;
 use std::str::FromStr;
-use super::CPU;
 
 lazy_static! {
     pub static ref ARCH: [Option<Instruction>; 256] = instructions::gen_excs();
@@ -54,65 +54,49 @@ impl AddressingMode {
         match self {
             AddressingMode::Impl => (Address::Implied, 0),
             AddressingMode::Imm => (Address::Immediate(cpu.read(cpu.pc + 1, ctx)), 0),
-            AddressingMode::Zpg => {
-                (Address::Addressed(cpu.read(cpu.pc + 1, ctx) as u16), 0)
-            },
-            AddressingMode::ZpgX => {
-                (Address::Addressed(cpu.read(cpu.pc + 1, ctx).wrapping_add(cpu.x) as u16), 0)
-            },
-            AddressingMode::ZpgY => {
-                (Address::Addressed(cpu.read(cpu.pc + 1, ctx).wrapping_add(cpu.y) as u16), 0)
-            },
-            AddressingMode::Ind => {
-                (Address::Addressed(cpu.read_wide(cpu.pc + 1, ctx)), 0)
-            },
+            AddressingMode::Zpg => (Address::Addressed(cpu.read(cpu.pc + 1, ctx) as u16), 0),
+            AddressingMode::ZpgX => (
+                Address::Addressed(cpu.read(cpu.pc + 1, ctx).wrapping_add(cpu.x) as u16),
+                0,
+            ),
+            AddressingMode::ZpgY => (
+                Address::Addressed(cpu.read(cpu.pc + 1, ctx).wrapping_add(cpu.y) as u16),
+                0,
+            ),
+            AddressingMode::Ind => (Address::Addressed(cpu.read_wide(cpu.pc + 1, ctx)), 0),
             AddressingMode::XInd => {
                 let zpg_addr = cpu.read(cpu.pc + 1, ctx);
-                (Address::Addressed(cpu.read_wide(zpg_addr.wrapping_add(cpu.x) as u16, ctx)), 0)
-            },
-            AddressingMode::Rel => {
-                (Address::Immediate(cpu.read(cpu.pc + 1, ctx)), 0)
-            },
+                (
+                    Address::Addressed(cpu.read_wide(zpg_addr.wrapping_add(cpu.x) as u16, ctx)),
+                    0,
+                )
+            }
+            AddressingMode::Rel => (Address::Immediate(cpu.read(cpu.pc + 1, ctx)), 0),
             AddressingMode::IndY => {
                 let zpg_addr = cpu.read(cpu.pc + 1, ctx);
                 let mut effective_addr = cpu.read_wide(zpg_addr as u16, ctx);
                 let prev = effective_addr;
-                effective_addr += cpu.y as u16;
+                effective_addr = effective_addr.wrapping_add(cpu.y as u16);
                 let cycles = if prev >> 8 != effective_addr >> 8 {
                     1
-                }
-                else {
+                } else {
                     0
                 };
                 (Address::Addressed(effective_addr), cycles)
             }
-            AddressingMode::Abs => {
-                (Address::Addressed(cpu.read_wide_nowrap(cpu.pc + 1, ctx)), 0)
-            },
+            AddressingMode::Abs => (Address::Addressed(cpu.read_wide_nowrap(cpu.pc + 1, ctx)), 0),
             AddressingMode::AbsX => {
                 let addr = cpu.read_wide(cpu.pc + 1, ctx);
-                let eff_addr = addr + cpu.x as u16;
-                let cycles = if addr >> 8 != eff_addr >> 8 {
-                    println!("{:#06X}, {:#06X}", addr, eff_addr);
-                    1
-                }
-                else {
-                    0
-                };
+                let eff_addr = addr.wrapping_add(cpu.x as u16);
+                let cycles = if addr >> 8 != eff_addr >> 8 { 1 } else { 0 };
                 (Address::Addressed(eff_addr), cycles)
-            },
+            }
             AddressingMode::AbsY => {
                 let addr = cpu.read_wide(cpu.pc + 1, ctx);
-                let eff_addr = addr + cpu.y as u16;
-                let cycles = if addr >> 8 != eff_addr >> 8 {
-                    1
-                }
-                else {
-                    0
-                };
+                let eff_addr = addr.wrapping_add(cpu.y as u16);
+                let cycles = if addr >> 8 != eff_addr >> 8 { 1 } else { 0 };
                 (Address::Addressed(eff_addr), cycles)
-
-            },
+            }
         }
     }
 }
@@ -151,27 +135,24 @@ impl Operation {
             Operation::Addressed(f) => {
                 if let Address::Addressed(a) = addr {
                     f(ctx, cpu, *a)
-                }
-                else {
+                } else {
                     panic!()
                 }
-            },
+            }
             Operation::Immediate(f) => {
                 if let Address::Immediate(a) = addr {
                     f(ctx, cpu, *a)
-                }
-                else {
+                } else {
                     panic!()
                 }
-            },
+            }
             Operation::Implied(f) => {
                 if let Address::Implied = addr {
                     f(ctx, cpu)
-                }
-                else {
+                } else {
                     panic!()
                 }
-            },
+            }
         }
     }
 }
@@ -188,7 +169,7 @@ impl Instruction {
         let last_pc = cpu.pc;
 
         let (addr, addr_cycles) = self.mode.address(ctx, cpu);
-        
+
         self.operation.run(ctx, cpu, &addr);
 
         let mut cycles = self.cycles as usize;
@@ -202,8 +183,7 @@ impl Instruction {
         if self.mode == AddressingMode::Rel {
             if cpu.pc >> 8 != last_pc >> 8 {
                 cycles += 1;
-            }
-            else if cpu.pc != last_pc {
+            } else if cpu.pc != last_pc {
                 cycles += 1;
                 if (cpu.pc + self.mode.len() as u16) >> 8 != last_pc >> 8 {
                     cycles += 1;
@@ -225,7 +205,7 @@ macro_rules! raw_inst {
                 opcode: stringify!($name).to_string(),
                 cycles: 2,
                 mode: ($mode).parse().unwrap(),
-                operation: $exc 
+                operation: $exc
             }
         ).is_none(), "Duplicate instruction {:#X}", $val);
 	);
@@ -441,10 +421,14 @@ fn parse_instruction_list() -> Vec<(String, AddressingMode, u8)> {
             if words.len() == 0 {
                 continue;
             }
-            assert!(words.len() == 6 || words.len() == 5, "Line:\n{}\nName: {}", line, name);
+            assert!(
+                words.len() == 6 || words.len() == 5,
+                "Line:\n{}\nName: {}",
+                line,
+                name
+            );
 
-            let mode = 
-            match words[0] {
+            let mode = match words[0] {
                 "immidiate" => AddressingMode::Imm,
                 "zeropage" => AddressingMode::Zpg,
                 "zeropage,X" => AddressingMode::ZpgX,
@@ -455,14 +439,18 @@ fn parse_instruction_list() -> Vec<(String, AddressingMode, u8)> {
                 "indirect" => AddressingMode::Ind,
                 "(indirect,X)" => AddressingMode::XInd,
                 "(indirect),Y" => AddressingMode::IndY,
-                "implied" |
-                "accumulator" => AddressingMode::Impl,
+                "implied" | "accumulator" => AddressingMode::Impl,
                 "relative" => AddressingMode::Rel,
                 a => panic!("{}", a),
             };
 
             // TODO: Page-crossing penalties
-            let cycles = words[words.len() - 1].chars().next().unwrap().to_digit(10).unwrap() as u8;
+            let cycles = words[words.len() - 1]
+                .chars()
+                .next()
+                .unwrap()
+                .to_digit(10)
+                .unwrap() as u8;
 
             result.push((name.clone(), mode, cycles));
         }
@@ -472,12 +460,11 @@ fn parse_instruction_list() -> Vec<(String, AddressingMode, u8)> {
 }
 
 fn BRANCH(_: &Context, cpu: &mut CPU, offset: u8, cond: bool) {
-    if cond { 
+    if cond {
         let neg = offset >> 7 != 0;
         if neg {
             cpu.pc -= (!offset + 1) as u16
-        }
-        else {
+        } else {
             cpu.pc += offset as u16
         }
     }
@@ -490,12 +477,12 @@ fn COMPARE(_: &Context, cpu: &mut CPU, lhs: u8, rhs: u8) {
             cpu.set_neg(diff >> 7 != 0);
             cpu.set_zero(false);
             cpu.set_carry(false);
-        },
+        }
         Ordering::Equal => {
             cpu.set_neg(false);
             cpu.set_zero(true);
             cpu.set_carry(true);
-        },
+        }
         Ordering::Greater => {
             cpu.set_neg(diff >> 7 != 0);
             cpu.set_zero(false);
@@ -579,13 +566,13 @@ fn SLO(ctx: &Context, cpu: &mut CPU, addr: u16) {
     let mut m = cpu.read(addr, ctx);
     let c = m >> 7;
     m <<= 1;
-    cpu.write(addr, m, ctx); 
+    cpu.write(addr, m, ctx);
     cpu.acc |= m;
     cpu.update_flags(cpu.acc);
     cpu.set_carry(c != 0);
 }
 
-fn RLA(ctx: &Context, cpu: &mut CPU,  addr: u16) {
+fn RLA(ctx: &Context, cpu: &mut CPU, addr: u16) {
     let v = cpu.read(addr, ctx);
     let result = rol(ctx, cpu, v);
     cpu.write(addr, result, ctx);
@@ -656,7 +643,7 @@ make_branch_func!(BCS, BCC, get_carry);
 
 macro_rules! make_arith_func {
     ($name:ident, $name2:ident, $op:tt) => {
-        fn $name(_: &Context, cpu: &mut CPU, imm: u8) { 
+        fn $name(_: &Context, cpu: &mut CPU, imm: u8) {
             cpu.acc $op imm;
             cpu.update_flags(cpu.acc);
         }
@@ -691,11 +678,22 @@ fn TXS(_: &Context, cpu: &mut CPU) {
     cpu.sp = cpu.x;
 }
 
-fn SBC(ctx: &Context, cpu: &mut CPU, addr: u16) { let v = cpu.read(addr, ctx); SBC_imm(ctx, cpu, v) }
-fn SBC_imm(ctx: &Context, cpu: &mut CPU, imm: u8) { SUB(ctx, cpu, imm); }
-fn ADC(ctx: &Context, cpu: &mut CPU, addr: u16) { let v = cpu.read(addr, ctx); ADC_imm(ctx, cpu, v); }
+fn SBC(ctx: &Context, cpu: &mut CPU, addr: u16) {
+    let v = cpu.read(addr, ctx);
+    SBC_imm(ctx, cpu, v)
+}
+fn SBC_imm(ctx: &Context, cpu: &mut CPU, imm: u8) {
+    SUB(ctx, cpu, imm);
+}
+fn ADC(ctx: &Context, cpu: &mut CPU, addr: u16) {
+    let v = cpu.read(addr, ctx);
+    ADC_imm(ctx, cpu, v);
+}
 
-fn LAX(ctx: &Context, cpu: &mut CPU, addr: u16) { LDA(ctx, cpu, addr); TAX(ctx, cpu); }
+fn LAX(ctx: &Context, cpu: &mut CPU, addr: u16) {
+    LDA(ctx, cpu, addr);
+    TAX(ctx, cpu);
+}
 
 macro_rules! make_compare {
     ($name:ident, $name2:ident, $reg:ident) => {
@@ -757,8 +755,16 @@ make_load_store!(LDA_imm, LDA, STA, acc);
 make_load_store!(LDX_imm, LDX, STX, x);
 make_load_store!(LDY_imm, LDY, STY, y);
 
-fn DEC(ctx: &Context, cpu: &mut CPU, addr: u16) { let v = (Wrapping(cpu.read(addr, ctx)) - Wrapping(1)).0; cpu.write(addr, v, ctx); cpu.update_flags(v); }
-fn INC(ctx: &Context, cpu: &mut CPU, addr: u16) { let v = (Wrapping(cpu.read(addr, ctx)) + Wrapping(1)).0; cpu.write(addr, v, ctx); cpu.update_flags(v); }
+fn DEC(ctx: &Context, cpu: &mut CPU, addr: u16) {
+    let v = (Wrapping(cpu.read(addr, ctx)) - Wrapping(1)).0;
+    cpu.write(addr, v, ctx);
+    cpu.update_flags(v);
+}
+fn INC(ctx: &Context, cpu: &mut CPU, addr: u16) {
+    let v = (Wrapping(cpu.read(addr, ctx)) + Wrapping(1)).0;
+    cpu.write(addr, v, ctx);
+    cpu.update_flags(v);
+}
 
 macro_rules! make_inc_dec {
     ($decname:ident, $incname:ident, $reg:ident) => {
@@ -814,8 +820,12 @@ make_flag_setter!(SEI, CLI, set_interrupt);
 make_flag_setter!(_SEV, CLV, set_overflow);
 make_flag_setter!(SED, CLD, set_decimal);
 
-fn JMP_abs(_: &Context, cpu: &mut CPU, addr: u16) { cpu.pc = addr - 3; }
-fn JMP_ind(ctx: &Context, cpu: &mut CPU, addr: u16) { cpu.pc = cpu.read_wide(addr, ctx) - 3; }
+fn JMP_abs(_: &Context, cpu: &mut CPU, addr: u16) {
+    cpu.pc = addr - 3;
+}
+fn JMP_ind(ctx: &Context, cpu: &mut CPU, addr: u16) {
+    cpu.pc = cpu.read_wide(addr, ctx) - 3;
+}
 
 fn NOP(_: &Context, _: &mut CPU) {}
 fn DOP_imm(_: &Context, _: &mut CPU, _: u8) {}
@@ -839,7 +849,7 @@ inst_list! {
     { BNE 0xD0 rel &BNE }
     { CPX 0xE0 imm &CPX_imm }
     { BEQ 0xF0 rel &BEQ }
-	{ ORA 0x01 cc_01_all_addressed &ORA }
+    { ORA 0x01 cc_01_all_addressed &ORA }
     { AND 0x21 cc_01_all_addressed &AND }
     { EOR 0x41 cc_01_all_addressed &EOR }
     { ADC 0x61 cc_01_all_addressed &ADC }

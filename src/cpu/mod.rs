@@ -1,7 +1,7 @@
 pub mod instruction;
 
-use instruction::Instruction;
 use super::Context;
+use instruction::Instruction;
 
 pub enum State {
     Reset,
@@ -11,12 +11,12 @@ pub enum State {
 }
 
 pub struct CPU {
-	pub status: u8,
-	pub pc: u16,
-	pub acc: u8,
-	pub x: u8,
-	pub y: u8,
-	pub sp: u8,
+    pub status: u8,
+    pub pc: u16,
+    pub acc: u8,
+    pub x: u8,
+    pub y: u8,
+    pub sp: u8,
     pub ram: [u8; 0x800],
     pub state: State,
 }
@@ -48,8 +48,7 @@ impl CPU {
     pub fn read(&self, addr: u16, context: &Context) -> u8 {
         if addr < 0x2000 {
             self.ram[(addr % 0x800) as usize]
-        }
-        else {
+        } else {
             context.read(addr)
         }
     }
@@ -57,8 +56,7 @@ impl CPU {
     pub fn write(&mut self, addr: u16, value: u8, context: &Context) {
         if addr < 0x2000 {
             self.ram[(addr % 0x800) as usize] = value;
-        }
-        else {
+        } else {
             context.write(addr, value);
         }
     }
@@ -79,9 +77,9 @@ impl CPU {
         self.get_status(2)
     }
 
-	pub fn set_neg(&mut self, v: bool) {
+    pub fn set_neg(&mut self, v: bool) {
         self.set_status(v, 7);
-	}
+    }
 
     pub fn get_neg(&self) -> bool {
         self.get_status(7)
@@ -148,14 +146,14 @@ impl CPU {
 
         self.pc = (self.read(0xFFFB, ctx) as u16) << 8 | self.read(0xFFFA, ctx) as u16;
         self.state = State::Nmi;
-        
+
         //println!("NMI triggered, PC is now {:#06X} ({:#04X})", self.pc, self.read(self.pc, ctx));
     }
 
-	pub fn try_irq(&mut self, ctx: &Context) -> bool {
-		if self.get_interrupt() {
-			return false;
-		}
+    pub fn try_irq(&mut self, ctx: &Context) -> bool {
+        if self.get_interrupt() {
+            return false;
+        }
 
         self.push((self.pc >> 8) as u8);
         self.push((self.pc & 0xFF) as u8);
@@ -168,7 +166,7 @@ impl CPU {
         self.state = State::Irq;
 
         true
-	}
+    }
 
     pub fn print_stack(&self) {
         println!("SP: {:#04X}, Stack:", self.sp);
@@ -178,27 +176,28 @@ impl CPU {
     }
 
     pub fn print_instr(&mut self, instr: &Instruction, ctx: &Context) {
-        print!("[PC: {:#06X}] A:{:02X} X:{:02X} Y:{:02X} P:{:02X} SP:{:02X} {} {: >4?}:", self.pc, self.acc, self.x, self.y, self.status, self.sp, instr.opcode, instr.mode);
+        print!(
+            "[PC: {:#06X}] A:{:02X} X:{:02X} Y:{:02X} P:{:02X} SP:{:02X} {} {: >4?}:",
+            self.pc, self.acc, self.x, self.y, self.status, self.sp, instr.opcode, instr.mode
+        );
         for i in 0..instr.mode.len() {
             print!("{:#04X} ", self.read(self.pc + i as u16, ctx));
         }
         println!("");
     }
 
-
     pub fn next(&mut self, ctx: &Context) -> usize {
         let cycles = match self.state {
             State::Reset => {
-                self.pc = (self.read(self.pc + 1, ctx) as u16) << 8 | self.read(self.pc, ctx) as u16;
+                self.pc =
+                    (self.read(self.pc + 1, ctx) as u16) << 8 | self.read(self.pc, ctx) as u16;
                 println!("Reset vector was {:#06X}", self.pc);
                 self.state = State::Run;
                 1
-            },
-            State::Irq | 
-            State::Nmi |
-            State::Run => {
+            }
+            State::Irq | State::Nmi | State::Run => {
                 let id = self.read(self.pc, ctx);
-                let instr = instruction::ARCH[id as usize].as_ref().unwrap_or_else(|| { 
+                let instr = instruction::ARCH[id as usize].as_ref().unwrap_or_else(|| {
                     self.print_stack();
                     panic!("Instruction {:#04X} does not exist", id)
                 });
@@ -208,14 +207,12 @@ impl CPU {
                 // TODO: Fix this
                 if id == 0x00 && self.try_irq(ctx) {
                     1
-                }
-                else {
+                } else {
                     instr.run(ctx, self)
                 }
-            },
+            }
         };
 
         cycles
     }
 }
-

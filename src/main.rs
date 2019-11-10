@@ -19,8 +19,16 @@ fn main() {
         std::process::exit(1)
     });
 
-    println!("ROM has mapper {} and submapper {}", rom.mapper, rom.submapper);
-    println!("PRG ROM has size {}, CHR ROM has size {}, and misc ROM has size {}", rom.prg_rom.len(), rom.chr_rom.len(), rom.misc_rom.len());
+    println!(
+        "ROM has mapper {} and submapper {}",
+        rom.mapper, rom.submapper
+    );
+    println!(
+        "PRG ROM has size {}, CHR ROM has size {}, and misc ROM has size {}",
+        rom.prg_rom.len(),
+        rom.chr_rom.len(),
+        rom.misc_rom.len()
+    );
 
     let mut ctx = Context::from(rom);
 
@@ -34,7 +42,11 @@ fn main() {
             ctx.cycle = 7;
         }
 
-        let expected: Vec<_> = std::fs::read_to_string("./nestest.log").unwrap().lines().map(parse_log_line).collect();
+        let expected: Vec<_> = std::fs::read_to_string("./nestest.log")
+            .unwrap()
+            .lines()
+            .map(parse_log_line)
+            .collect();
 
         for i in 0.. {
             /* Program Counter, Acc, X, Y, Status, Stack Pointer */
@@ -46,9 +58,7 @@ fn main() {
             assert_eq!(expected[i], actual);
             ctx.next();
         }
-
-    }
-    else {
+    } else {
         loop {
             ctx.next();
         }

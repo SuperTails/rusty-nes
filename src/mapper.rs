@@ -1,7 +1,7 @@
-use num_traits::cast::FromPrimitive;
 use crate::mem_location::*;
-use std::cell::RefCell;
 use enum_dispatch::enum_dispatch;
+use num_traits::cast::FromPrimitive;
+use std::cell::RefCell;
 
 type MapperResult<'a> = AnyMemLocation<'a>;
 
@@ -18,14 +18,12 @@ pub trait Mapped {
             // $2000 == $2800
             // $2400 == $2C00
             0x2000 + (addr - 0x2000) % 0x800
-        }
-        else {
+        } else {
             // $2000 == $2400
             // $2800 == $2C00
             if addr >= 0x2800 {
                 0x2400 + ((addr - 0x2800) % 0x400)
-            }
-            else {
+            } else {
                 0x2000 + ((addr - 0x2000) % 0x400)
             }
         }
@@ -49,8 +47,8 @@ pub enum AnyMemLocation<'a> {
     Mapper3Location(Mapper3Location<'a>),
 }
 
-/* 
- * MAPPER 0 
+/*
+ * MAPPER 0
  *
  * PRG-ROM: 16KiB or 32KiB
  *  not bankswitched
@@ -65,19 +63,19 @@ pub enum AnyMemLocation<'a> {
 pub struct Mapper0 {
     prg_rom: Vec<u8>,
     prg_ram: RefCell<Vec<u8>>,
-    chr_rom: Vec<u8>,
+    chr_rom: RefCell<Vec<u8>>,
 }
 
 impl Mapper0 {
     pub fn new(prg_rom: Vec<u8>, chr_rom: Vec<u8>) -> Mapper0 {
         assert!(prg_rom.len() == 0x4000 || prg_rom.len() == 0x8000);
-        assert!(chr_rom.len() == 0x2000);
+        assert_eq!(chr_rom.len() % 0x2000, 0);
 
         /* TODO: Figure out how much RAM to allocate */
         Mapper0 {
             prg_rom,
             prg_ram: RefCell::new([0; 0x800].to_vec()),
-            chr_rom,
+            chr_rom: RefCell::new(chr_rom),
         }
     }
 }
@@ -100,14 +98,21 @@ impl Mapped for Mapper0 {
         match addr {
             0x4020..=0x5FFF => panic!("CPU Read from unmapped cart memory at {:#06X}", addr),
             0x6000..=0x7FFF => Mapper0Ram(&self.prg_ram, (addr - 0x6000)).into(),
-            0x8000..=0xFFFF => RomLocation{ mem: &self.prg_rom[(addr - 0x8000) as usize % prg_rom_len] }.into(),
+            0x8000..=0xFFFF => RomLocation {
+                mem: &self.prg_rom[(addr - 0x8000) as usize % prg_rom_len],
+            }
+            .into(),
             _ => panic!("CPU access to memory not in cart at {:#06X}", addr),
         }
     }
 
     fn mem_ppu<'a>(&'a self, addr: u16) -> MapperResult<'a> {
         match addr {
-            0x0000..=0x1FFF => RomLocation { mem: &self.chr_rom[addr as usize] }.into(),
+            0x0000..=0x1FFF => RamLocation {
+                addr,
+                mem: &self.chr_rom,
+            }
+            .into(),
             _ => panic!("PPU access to memory not in cart at {:#06X}", addr),
         }
     }
@@ -147,15 +152,14 @@ enum MirrorMode {
 enum PrgRomMode {
     DoubleSize = 1,
     FixFirst,
-    FixLast
+    FixLast,
 }
 
 #[derive(FromPrimitive, Debug, Clone, Copy, PartialEq, Eq)]
 enum ChrMode {
     DoubleSize = 0,
-    Individual
+    Individual,
 }
-
 
 // TODO: Variants of this
 pub struct Mapper1 {
@@ -165,13 +169,13 @@ pub struct Mapper1 {
 
     chr_rom: RefCell<Vec<u8>>, // 8K (??)
 
-    data: RefCell<Mapper1Impl>
+    data: RefCell<Mapper1Impl>,
 }
 
 struct Mapper1Impl {
     shifter: u8,
     shift_count: u8,
-    
+
     mirror_mode: MirrorMode,
     prg_rom_mode: PrgRomMode,
     chr_mode: ChrMode,
@@ -206,7 +210,7 @@ impl Mapper1 {
 
 pub enum Mapper1Location<'a> {
     Ram((&'a RefCell<Vec<u8>>, u16)),
-    Mmio((&'a Mapper1, u16))
+    Mmio((&'a Mapper1, u16)),
 }
 
 impl<'a> MemLocation<'a> for Mapper1Location<'a> {
@@ -220,34 +224,36 @@ impl<'a> MemLocation<'a> for Mapper1Location<'a> {
                 match data.prg_rom_mode {
                     PrgRomMode::DoubleSize => {
                         // Switch 32KiB at $8000
-                        let bank_start = (0x8000 * ((data.prg_bank & 0b01110) >> 1) as usize) % mapper.prg_rom.borrow().len();
+                        let bank_start = (0x8000 * ((data.prg_bank & 0b01110) >> 1) as usize)
+                            % mapper.prg_rom.borrow().len();
                         let bank_end = bank_start + 0x8000;
                         let bank = &prg_rom[bank_start..bank_end];
                         bank[(*addr - 0x8000) as usize]
-                    },
+                    }
                     PrgRomMode::FixFirst => {
                         // Fix first bank at $8000,
                         // Switch 16KiB at $C000
                         match addr {
-                            0x8000..=0xBFFF => {
-                                mapper.prg_rom.borrow()[(*addr - 0x8000) as usize]
-                            },
+                            0x8000..=0xBFFF => mapper.prg_rom.borrow()[(*addr - 0x8000) as usize],
                             _ => {
-                                let bank_start = (0x4000 * (data.prg_bank & 0b01111) as usize) % prg_rom.len();
+                                let bank_start =
+                                    (0x4000 * (data.prg_bank & 0b01111) as usize) % prg_rom.len();
                                 prg_rom[bank_start + *addr as usize - 0x8000]
                             }
                         }
-                    },
+                    }
                     PrgRomMode::FixLast => {
                         // Fix last bank at $C000,
                         // Switch 16KiB at $8000
                         match addr {
                             0xC000..=0xFFFF => {
-                                let bank = &mapper.prg_rom.borrow()[(mapper.prg_rom.borrow().len() - 0x4000)..];
+                                let bank = &mapper.prg_rom.borrow()
+                                    [(mapper.prg_rom.borrow().len() - 0x4000)..];
                                 bank[(*addr - 0xC000) as usize]
                             }
                             _ => {
-                                let bank_start = (0x4000 * (data.prg_bank & 0b01111) as usize) % prg_rom.len();
+                                let bank_start =
+                                    (0x4000 * (data.prg_bank & 0b01111) as usize) % prg_rom.len();
                                 let bank_end = bank_start + 0x4000;
                                 let bank = &prg_rom[bank_start..bank_end];
                                 bank[(*addr - 0x8000) as usize]
@@ -255,7 +261,7 @@ impl<'a> MemLocation<'a> for Mapper1Location<'a> {
                         }
                     }
                 }
-            },
+            }
         }
     }
 
@@ -265,11 +271,10 @@ impl<'a> MemLocation<'a> for Mapper1Location<'a> {
             Mapper1Location::Mmio((mapper, addr)) => {
                 let mut data = mapper.data.borrow_mut();
                 if value & 0x80 != 0 {
-					// TODO: Does this affect the prg_bank register?
+                    // TODO: Does this affect the prg_bank register?
                     data.shifter = 0;
                     data.shift_count = 0;
-                }
-                else {
+                } else {
                     data.shifter >>= 1;
                     data.shifter |= (value & 1) << 4;
 
@@ -279,27 +284,40 @@ impl<'a> MemLocation<'a> for Mapper1Location<'a> {
                     if data.shift_count == 5 {
                         let register = (*addr >> 13) & 0b11;
 
-                        println!("Writing {:#b} to mapper register {}", data.shifter, register);
-						if register != 0 {
-							println!("... with modes {:?}, {:?}, {:?}", data.mirror_mode, data.prg_rom_mode, data.chr_mode);
-						}
+                        println!(
+                            "Writing {:#b} to mapper register {}",
+                            data.shifter, register
+                        );
+                        if register != 0 {
+                            println!(
+                                "... with modes {:?}, {:?}, {:?}",
+                                data.mirror_mode, data.prg_rom_mode, data.chr_mode
+                            );
+                        }
 
                         // Register is bits 14 and 13 of the address
                         match register {
                             0 => {
-                                let mut prg_rom_mode = (data.shifter >> 2 ) & 0b11;
-                                if prg_rom_mode == 0 { prg_rom_mode = 1 }
+                                let mut prg_rom_mode = (data.shifter >> 2) & 0b11;
+                                if prg_rom_mode == 0 {
+                                    prg_rom_mode = 1
+                                }
 
-                                data.mirror_mode = MirrorMode::from_u8(data.shifter & 0b11).unwrap();
+                                data.mirror_mode =
+                                    MirrorMode::from_u8(data.shifter & 0b11).unwrap();
                                 data.prg_rom_mode = PrgRomMode::from_u8(prg_rom_mode).unwrap();
-                                data.chr_mode = ChrMode::from_u8((data.shifter >> 4) & 0b1).unwrap();
+                                data.chr_mode =
+                                    ChrMode::from_u8((data.shifter >> 4) & 0b1).unwrap();
 
-                                println!("Modes are now: {:?}, {:?}, {:?}", data.mirror_mode, data.prg_rom_mode, data.chr_mode);
-                            },
+                                println!(
+                                    "Modes are now: {:?}, {:?}, {:?}",
+                                    data.mirror_mode, data.prg_rom_mode, data.chr_mode
+                                );
+                            }
                             1 => {
                                 println!("Set CHR bank 0 to {}", data.shifter);
                                 data.chr_bank_0 = data.shifter;
-                            },
+                            }
                             2 => {
                                 println!("Set CHR bank 1 to {}", data.shifter);
                                 data.chr_bank_1 = data.shifter;
@@ -307,7 +325,7 @@ impl<'a> MemLocation<'a> for Mapper1Location<'a> {
                             3 => {
                                 println!("Set PRG bank to {}", data.shifter);
                                 data.prg_bank = data.shifter;
-                            },
+                            }
                             _ => unreachable!(),
                         }
 
@@ -315,7 +333,7 @@ impl<'a> MemLocation<'a> for Mapper1Location<'a> {
                         data.shifter = 0;
                     }
                 }
-            },
+            }
         }
     }
 }
@@ -323,19 +341,13 @@ impl<'a> MemLocation<'a> for Mapper1Location<'a> {
 impl Mapped for Mapper1 {
     fn mem_cpu<'a>(&'a self, addr: u16) -> MapperResult<'a> {
         match addr {
-            0x4020..=0x5FFF => {
-                println!("Returning wrapped from unmapped address {:#06X}", addr);
-                if addr == 0x5B68 {
-                    panic!();
-                }
-                self.mem_cpu(addr + 0x2000)
-            },
+            0x4020..=0x5FFF => self.mem_cpu((addr % self.prg_ram.borrow().len() as u16) + 0x6000),
             0x6000..=0x7FFF => {
                 if self.data.borrow().prg_bank & (1 << 4) != 0 {
                     panic!("RAM is disabled")
                 }
                 Mapper1Location::Ram((&self.prg_ram, (addr - 0x6000))).into()
-            },
+            }
             0x8000..=0xFFFF => Mapper1Location::Mmio((self, addr)).into(),
             _ => panic!(),
         }
@@ -350,24 +362,22 @@ impl Mapped for Mapper1 {
 
         match data.chr_mode {
             ChrMode::Individual => {
-                let bank_select = 
-                if (0x0000..=0x0FFF).contains(&addr) {
+                let bank_select = if (0x0000..=0x0FFF).contains(&addr) {
                     data.chr_bank_0
-                }
-                else {
+                } else {
                     data.chr_bank_1
                 };
 
                 let bank_start = 0x1000 * (bank_select as usize);
                 Mapper1Location::Ram((&self.chr_rom, addr + bank_start as u16)).into()
-            },
+            }
             ChrMode::DoubleSize => {
                 let bank_select = data.chr_bank_0 >> 1;
 
                 let bank_start = 0x2000 * (bank_select as usize);
 
                 Mapper1Location::Ram((&self.chr_rom, addr + bank_start as u16)).into()
-            },
+            }
         }
     }
 
@@ -378,7 +388,7 @@ impl Mapped for Mapper1 {
 }
 
 pub struct Mapper3 {
-    prg_rom: Vec<u8>, // 16KiB or 32KiB, not bankswitched
+    prg_rom: Vec<u8>,      // 16KiB or 32KiB, not bankswitched
     chr: RefCell<Vec<u8>>, // Up to 2048KiB, bank size 8KiB
     bank_select: RefCell<u8>,
 }
@@ -389,7 +399,11 @@ impl Mapper3 {
         assert_eq!(chr.len() % 0x2000, 0);
         assert!(prg_rom.len() == 0x4000 || prg_rom.len() == 0x8000);
 
-        Mapper3 { prg_rom, chr: RefCell::new(chr), bank_select: RefCell::new(0) }
+        Mapper3 {
+            prg_rom,
+            chr: RefCell::new(chr),
+            bank_select: RefCell::new(0),
+        }
     }
 }
 
@@ -410,21 +424,31 @@ impl<'a> MemLocation<'a> for Mapper3Location<'a> {
         match self {
             Mapper3Location::CPU((bank_select, _)) => {
                 *bank_select.borrow_mut() = value % 4;
-            },
+            }
             Mapper3Location::PPU((d, addr)) => {
                 d.borrow_mut()[*addr as usize] = value;
-            },
+            }
         }
     }
 }
 
 impl Mapped for Mapper3 {
     fn mem_cpu<'a>(&'a self, addr: u16) -> MapperResult<'a> {
-        if (0x8000..=0xFFFF).contains(&addr) {
+        // TODO: What do I do with 0x4020 to 0x7FFF?
+        /*if (0x8000..=0xFFFF).contains(&addr) {
             let d = self.prg_rom[(addr - 0x8000) as usize];
             Mapper3Location::<'a>::CPU((&self.bank_select, d)).into()
         }
         else {
+            panic!()
+        }*/
+        if (0x4020..=0x7FFF).contains(&addr) {
+            let d = self.prg_rom[addr as usize];
+            Mapper3Location::<'a>::CPU((&self.bank_select, d)).into()
+        } else if (0x4020..=0xFFFF).contains(&addr) {
+            let d = self.prg_rom[(addr - 0x8000) as usize];
+            Mapper3Location::<'a>::CPU((&self.bank_select, d)).into()
+        } else {
             panic!()
         }
     }
@@ -436,7 +460,7 @@ impl Mapped for Mapper3 {
                 let bank_start = selected as u16 * 0x2000;
                 let mapped_addr = addr + bank_start;
                 Mapper3Location::<'a>::PPU((&self.chr, mapped_addr)).into()
-            },
+            }
             _ => panic!(),
         }
     }
