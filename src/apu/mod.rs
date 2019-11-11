@@ -1,13 +1,17 @@
 use sdl2::audio::AudioCallback;
 use std::sync::{Arc, Mutex};
+use crate::cpu::CPU;
+use crate::Context;
 
 mod noise_gen;
 mod pulse_gen;
 mod triangle_gen;
+mod dmc;
 
 use noise_gen::NoiseGen;
 use pulse_gen::PulseGen;
 use triangle_gen::TriangleGen;
+use dmc::DMC;
 
 // APU clock rate is 894886.5Hz
 // About once every 56 cycles @ 16KHz
@@ -25,6 +29,7 @@ pub struct APU {
     cycle: usize,
 
     dmc_enable: bool,
+    dmc: DMC,
 
     noise_enable: bool,
     noise: NoiseGen,
@@ -68,7 +73,7 @@ impl APU {
         // TODO: DMC or frame interrupt
         let mut result = 0;
 
-        result <<= (self.dmc_enable as u8) << 4;
+        result <<= ((self.dmc_enable && self.dmc.is_running()) as u8) << 4;
         result <<= (self.noise_enable as u8) << 3;
         result <<= (self.triangle_enable as u8) << 2;
         result <<= (self.pulse_2_enable as u8) << 1;
@@ -86,6 +91,7 @@ impl APU {
                 irq_inhibit: false,
                 cycle: 0,
                 dmc_enable: false,
+                dmc: DMC::new(),
                 noise_enable: false,
                 noise: NoiseGen::new(),
                 pulse_2_enable: false,
@@ -121,11 +127,15 @@ impl APU {
             total += self.noise.output();
         }
 
+        if self.dmc_enable {
+            total += self.dmc.output();
+        }
+
         total
     }
 
     // TODO: Delay in settings changing
-    pub fn next(&mut self, cpu_cycles: usize) {
+    pub fn next(&mut self, cpu_cycles: usize, context: &Context, cpu: &CPU) {
         for _ in 0..cpu_cycles {
             self.cycle += 1;
             if self.step_mode {
@@ -187,6 +197,10 @@ impl APU {
                 if self.noise_enable {
                     self.noise.on_apu_cycle();
                 }
+
+                if self.dmc_enable {
+                    self.dmc.on_apu_cycle(cpu, context);
+                }
             }
 
             if self.cycle % 56 == 0 {
@@ -221,6 +235,9 @@ impl APU {
             }
             0xC..=0xF => {
                 self.noise.write_reg(reg as usize, value);
+            }
+            0x10..=0x13 => {
+                self.dmc.write_reg(reg as usize, value);
             }
             0x0..=0x3 => {
                 self.pulse_1.write_reg(reg as usize, value);

@@ -117,7 +117,7 @@ impl<'a> MemLocation<'a> for PPURegister<'a> {
     fn read(&mut self) -> u8 {
         let result = match self.reg {
             PPURegInt::Ctrl => self.ppu.borrow().ctrl.0,
-            PPURegInt::Mask => self.ppu.borrow().mask,
+            PPURegInt::Mask => self.ppu.borrow().mask.0,
             PPURegInt::Status => {
                 let mut ppu = self.ppu.borrow_mut();
                     
@@ -161,7 +161,7 @@ impl<'a> MemLocation<'a> for PPURegister<'a> {
                 self.ppu.borrow_mut().ctrl.0 = value;
             }
             PPURegInt::Mask => {
-                self.ppu.borrow_mut().mask = value;
+                self.ppu.borrow_mut().mask.0 = value;
             }
             PPURegInt::Status => println!("Attempt to write to status"),
             PPURegInt::Oamaddr => {

@@ -67,6 +67,27 @@ bitfield! {
     nmi_enabled, set_nmi_enabled: 7;
 }
 
+bitfield! {
+    pub struct PPUMask(u8);
+    impl Debug;
+
+    greyscale, set_greyscale: 0;
+
+    mask_background, set_background_mask: 1;
+
+    mask_sprites, set_sprite_mask: 2;
+
+    render_background, set_render_background: 3;
+
+    render_sprites, set_render_sprites: 4;
+
+    emphasize_red, set_emphasize_red: 5;
+
+    emphasize_green, set_emphasize_green: 6;
+
+    emphasize_blue, set_emphasize_blue: 7;
+}
+
 fn get_palette_index(attr_table: &[u8], tile_row: u8, tile_col: u8) -> u8 {
     assert!(attr_table.len() == 64);
 
@@ -86,7 +107,7 @@ fn get_palette_index(attr_table: &[u8], tile_row: u8, tile_col: u8) -> u8 {
 pub struct PPU {
     pub ctrl: PPUCtrl,
 
-    pub mask: u8,
+    pub mask: PPUMask,
 
     pub last_value: u8,
 
@@ -126,7 +147,7 @@ pub struct PPU {
 
 impl PPU {
     fn make_target(pixel_format: &PixelFormatEnum) -> Surface<'static> {
-        Surface::new(1024, 480, *pixel_format).unwrap()
+        Surface::new(1024 + 256, 480, *pixel_format).unwrap()
     }
 
     pub fn new(pixel_format: &PixelFormatEnum) -> PPU {
@@ -134,10 +155,10 @@ impl PPU {
             dma_request: None,
             prev_nmi_state: false,
             ctrl: PPUCtrl(0),
+            mask: PPUMask(0),
             frame: 0,
             scanline: 0,
             pixel: 0,
-            mask: 0,
             last_value: 0,
             last_frames: [Instant::now(); 10].to_vec(),
             target: PPU::make_target(pixel_format),
@@ -170,8 +191,8 @@ impl PPU {
                                 .0
                                 * 85;
 
-                            let p_x = x + col * 8 + table * 128 + 512;
-                            let p_y = y + row * 8;
+                            let p_x = x + col * 8 + 512;
+                            let p_y = y + row * 8 + table * 128;
 
                             self.set_pixel_positioned(p_y as usize, p_x as usize, &Color::RGB(color, color, color));
                         }
@@ -289,7 +310,7 @@ impl PPU {
 
         self.render_pattern_tables(context);
         self.render_oam(context);
-        //self.render_nametables(context);
+        self.render_nametables(context);
         /*for y in (0..(240 / 32)).map(|y| y * 32) {
             for x in (0..(256 / 32)).map(|x| x * 32) {
                 sdl_system.canvas().draw_rect(sdl2::rect::Rect::new(x as i32, y as i32, 32, 32)).unwrap();
@@ -307,8 +328,25 @@ impl PPU {
             .canvas()
             .copy(&tex, None, Rect::new(0, 0, self.target.width(), self.target.height()))
             .unwrap();
+
+        let nametable_x = 512 + 128 + 256 * (self.selected_nametable() % 2);
+        let nametable_y = 240 * (self.selected_nametable() / 2);
+        sdl_system.canvas().set_draw_color(Color::RGB(255, 255, 255));
+        sdl_system
+            .canvas()
+            .draw_rect(Rect::new(nametable_x as i32, nametable_y as i32, 256, 240))
+            .unwrap();
+
+        let scrolled_x = nametable_x + (self.scroll >> 8) as usize;
+        let scrolled_y = nametable_y + (self.scroll & 0xFF) as usize;
+        sdl_system.canvas().set_draw_color(Color::RGB(255, 127, 127));
+        sdl_system
+            .canvas()
+            .draw_rect(Rect::new(scrolled_x as i32, scrolled_y as i32, 256, 240))
+            .unwrap();
+
         sdl_system.present();
-        sdl_system.canvas().set_draw_color(Color::from((0, 0, 0)));
+        sdl_system.canvas().set_draw_color(Color::RGB(0, 0, 0));
         sdl_system.canvas().clear();
 
         //println!("VBlank occurred");
@@ -392,8 +430,8 @@ impl PPU {
                     for x in 0..8 {
                         let (_, color, _) = self.get_sprite_pixel(&self.oam[row * 8 + col], x as u8, y as u8, context);
 
-                        let p_x = x + col * 8 + 512 + 256;
-                        let p_y = y + row * height;
+                        let p_x = x + col * 8 + 512;
+                        let p_y = y + row * height + 256;
 
                         self.set_pixel_positioned(p_y as usize, p_x as usize, &color);
                     }
@@ -403,22 +441,31 @@ impl PPU {
     }
 
     fn render_nametables(&mut self, context: &Context) {
-        for row in 0..60 {
-            for y in 0..8 {
-                for col in 0..64 {
-                    for x in 0..8 {
-                        let p_x = x + col * 8;
-                        let p_y = y + row * 8;
+        for y in 0..480 {
+            for x in 0..512 {
+                let p_x = x + 512 + 128;
+                let p_y = y;
 
-                        let addr = col + row * 32;
+                let table = match((x / 256, y / 240)) {
+                    (0, 0) => 0,
+                    (1, 0) => 1,
+                    (0, 1) => 2,
+                    (1, 1) => 3,
+                    _ => unreachable!(),
+                };
 
-                        let addr = context.mapper.map_nametable_relative(addr);
-                        
-                        let color = self.color_pattern_mapped(addr, (y % 8) as u8, (x % 8) as u8, context).0 * 85;
+                let row = (y % 240) / 8;
+                let col = (x % 256) / 8;
 
-                        self.set_pixel_positioned(p_y as usize, p_x as usize, &Color::RGB(color, color, color));
-                    }
-                }
+                let table = &self.nametables[context.mapper.map_nametable_index(table)];
+
+                let pattern = table.pattern_at(row, col);
+
+                let pattern_addr = self.selected_patt_table_bg() + 16 * pattern as u16;
+                
+                let color = self.color_pattern_mapped(pattern_addr, (y % 8) as u8, (x % 8) as u8, context).0 * 85;
+
+                self.set_pixel_positioned(p_y as usize, p_x as usize, &Color::RGB(color, color, color));
             }
         }
     }
@@ -448,13 +495,8 @@ impl PPU {
             .collect()
     }
 
-    fn selected_name_table(&self) -> usize {
-        /* TODO: Vertical/horizontal mirroring */
-        /*let x_scroll = (self.scroll >> 8) as usize;
-        let y_scroll = (self.scroll & 0xFF) as usize;
-        let selected = (self.ctrl.nametable_addr() & /*3*/ 1) as usize * 0x400 + 32 * (y_scroll / 8) + (x_scroll / 8);
-        selected*/
-        (self.ctrl.nametable_addr() & 1) as usize * 0x400
+    fn selected_nametable(&self) -> usize {
+        self.ctrl.nametable_addr() as usize
     }
 
     fn selected_patt_table_bg(&self) -> u16 {
@@ -471,17 +513,28 @@ impl PPU {
         mut y: usize,
         context: &Context,
     ) -> (PalettedColor, Color) {
-        let wrap = x >= 256 || y >= 256;
+
+        let table = {
+            let selected = self.selected_nametable();
+            let mut table = (selected % 2, selected / 2);
+
+            table.0 = (table.0 + (x / 256)) % 2;
+            table.1 = (table.1 + (y / 240)) % 2;
+
+            table
+        };
+
+        let table_index = table.0 + 2 * table.1;
+
         x %= 256;
         y %= 240;
 
         let row = y / 8;
         let col = x / 8;
 
-        let selected =
-            (self.selected_name_table() + wrap as usize * NAMETABLE_SIZE) as usize % (self.nametables.len() * NAMETABLE_SIZE);
+        let selected = context.mapper.map_nametable_index(table_index);
 
-        let name_table = &self.nametables[selected / NAMETABLE_SIZE];
+        let name_table = &self.nametables[selected];
         let pattern_table = self.selected_patt_table_bg();
 
         let tile_name = name_table.pattern_at(row, col);
@@ -543,52 +596,68 @@ impl PPU {
         (sprite_color, color, object.attrs.priority())
     }
 
+    fn sprite_at(&self, x: usize, y: usize, context: &Context) -> Option<(PalettedColor, Color, bool, usize)> {
+        if y >= 1 {
+            let max_height = if self.ctrl.sprite_size() { 16 } else { 8 };
+            self.oam.iter().enumerate().filter_map(|(index, object)| {
+                if object.x as usize <= x && x < object.x as usize + 8
+                    && object.y as usize <= self.scanline - 2
+                        && y - 1 < object.y as usize + max_height {
+
+                        let s_x = self.pixel as u8 - object.x;
+                        let s_y = (self.scanline - 2) as u8 - object.y;
+                        let (pal_color, color, priority) = self.get_sprite_pixel(object, s_x, s_y, context);
+                        Some((pal_color, color, priority, index))
+                } else {
+                    None
+                }
+            }).next()
+        }
+        else {
+            None
+        }
+    }
+
     fn for_each_pixel(&mut self, context: &Context) {
         let x_scroll = self.scroll >> 8;
         let y_scroll = self.scroll & 0xFF;
-
-        /*if self.pixel + ((scroll >> 8) % 8) as usize >= 256 {
-            return;
-        }*/
 
         if self.pixel as usize >= 256 {
             return;
         }
 
-        let bg_color = self.get_background_color(
-            self.pixel + x_scroll as usize,
-            self.scanline - 1 + y_scroll as usize,
-            context,
-        );
+        let show_bg_pixel = self.mask.render_background()
+            && (self.mask.mask_background() || (self.pixel + x_scroll as usize) >= 8);
 
-        let mut sprite_color: Option<(PalettedColor, Color, bool)> = None;
+        let bg_color: Option<_> = if show_bg_pixel {
+            Some(self.get_background_color(
+                self.pixel + x_scroll as usize,
+                self.scanline - 1 + y_scroll as usize,
+                context
+            ))
+        } else {
+            None
+        };
 
-        if self.scanline >= 2 {
-            let max_height = if self.ctrl.sprite_size() { 16 } else { 8 };
-            for object in self.oam.iter() {
-                if object.x as usize <= self.pixel && self.pixel < object.x as usize + 8 {
-                    if object.y as usize <= self.scanline - 2
-                        && self.scanline - 2 < object.y as usize + max_height
-                    {
-                        let s_x = self.pixel as u8 - object.x;
-                        let s_y = (self.scanline - 2) as u8 - object.y;
-                        sprite_color = Some(self.get_sprite_pixel(object, s_x, s_y, context));
-                        break;
-                    }
-                }
-            }
-        }
+        // TODO: Determine whether this is the correct behavior
+        // if background rendering is off
+        let bg_color = bg_color.unwrap_or((PalettedColor(0), self.colors[0]));
+
+        let show_sp_pixel = self.mask.render_sprites()
+            && (self.mask.mask_sprites() || self.pixel >= 8);
+
+        let sprite_color: Option<(PalettedColor, Color, bool, usize)> = if show_sp_pixel {
+            self.sprite_at(self.pixel, self.scanline - 1, context)
+        } else {
+            None
+        };
 
         // TODO: Properly sort sprites
         let output = if let Some(sprite_color) = sprite_color {
             // TODO: I think this should only be triggered once
-            if (bg_color.0).0 != 0 && (sprite_color.0).0 != 0 {
-                self.status |= 1 << 6;
-            }
-
-            // TODO: Check sprite-0 hit conditions properly
-            if (bg_color.0).0 != 0 && (sprite_color.0).0 != 0 {
-                self.status |= 1 << 6;
+            // and also check sprite-0 hit conditions properly
+            if sprite_color.3 == 0 && (bg_color.0).0 != 0 && (sprite_color.0).0 != 0 && self.pixel != 255 && self.scanline - 1 < 239 {
+                self.status |= 0x40;
             }
 
             match ((bg_color.0).0, (sprite_color.0).0, sprite_color.2) {

@@ -163,7 +163,7 @@ impl SDLSystem {
         let video_subsystem = ctx.video().unwrap();
         let audio_subsystem = ctx.audio().unwrap();
         let window = video_subsystem
-            .window("Terrible NES", 256 * 4, 240 * 2)
+            .window("Terrible NES", 1024 + 256, 480)
             .position_centered()
             .build()
             .unwrap();
@@ -333,7 +333,7 @@ impl Context {
             let cycles = self.cpu.borrow_mut().next(self);
             self.cycle += cycles;
 
-            self.apu.borrow_mut().next(cycles as usize);
+            self.apu.borrow_mut().next(cycles as usize, self, &self.cpu.borrow());
             self.ppu
                 .borrow_mut()
                 .next(cycles as usize, self, &self.cpu.borrow());
