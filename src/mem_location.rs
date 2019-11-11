@@ -2,7 +2,7 @@ use crate::apu::APU;
 use crate::controller::Controller;
 use crate::cpu::CPU;
 use crate::mapper::{AnyMemLocation, Mapper0Ram, Mapper1Location, Mapper3Location};
-use crate::ppu::PPU;
+use crate::ppu::{PPU, nametable::NAMETABLE_SIZE};
 use crate::Context;
 use enum_dispatch::enum_dispatch;
 use std::cell::RefCell;
@@ -72,7 +72,10 @@ impl<'a> MemLocation<'a> for PPUNametable<'a> {
     }
 
     fn write(&mut self, value: u8) {
-        self.ppu.borrow_mut().name_tables[self.addr] = value;
+        let mut ppu = self.ppu.borrow_mut();
+        let table = self.addr / NAMETABLE_SIZE;
+        let entry = self.addr % NAMETABLE_SIZE;
+        ppu.nametables[table].write(entry, value);
     }
 }
 

@@ -10,23 +10,35 @@ pub trait Mapped {
 
     fn mem_ppu<'a>(&'a self, addr: u16) -> MapperResult<'a>;
 
-    fn map_nametable<'a>(&'a self, addr: u16) -> u16 {
-        assert!(addr >= 0x2000);
-        assert!(addr <= 0x3FFF);
+    fn map_nametable_index(&self, mut index: usize) -> usize {
+        assert!(index < 8);
+
+        index %= 4;
 
         if self.is_vert_mirrored() {
-            // $2000 == $2800
-            // $2400 == $2C00
-            0x2000 + (addr - 0x2000) % 0x800
+            index % 2
         } else {
-            // $2000 == $2400
-            // $2800 == $2C00
-            if addr >= 0x2800 {
-                0x2400 + ((addr - 0x2800) % 0x400)
+            if index < 2 {
+                0
             } else {
-                0x2000 + ((addr - 0x2000) % 0x400)
+                1
             }
         }
+    }
+
+    fn map_nametable_relative(&self, mut addr: u16) -> u16 {
+        assert!(addr < 0x2000);
+
+        addr %= 0x1000;
+
+        let index = (addr / 0x400) as usize;
+        let entry = (addr % 0x400) as usize;
+
+        (self.map_nametable_index(index) * 0x400 + entry) as u16
+    }
+
+    fn map_nametable(&self, addr: u16) -> u16 {
+        self.map_nametable_relative(addr - 0x2000) + 0x2000
     }
 
     fn is_vert_mirrored(&self) -> bool;

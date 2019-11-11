@@ -7,6 +7,10 @@ use sdl2::surface::Surface;
 use std::cell::RefCell;
 use std::time::Instant;
 
+pub mod nametable;
+
+use nametable::{Nametable, NAMETABLE_SIZE};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct PalettedColor(pub u8);
 
@@ -93,7 +97,7 @@ pub struct PPU {
     pub address: u16,
     pub scroll: u16,
 
-    pub name_tables: Vec<u8>,
+    pub nametables: Vec<Nametable>,
 
     pub palette_idxs: [u8; 0x20],
 
@@ -143,7 +147,7 @@ impl PPU {
             address: 0,
             scroll: 0,
             read_buffer: RefCell::new(0),
-            name_tables: [0; 0x800].to_vec(),
+            nametables: vec![Nametable::default(), Nametable::default()],
             palette_idxs: [
                 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
                 24, 25, 26, 27, 28, 29, 30, 31, 32,
@@ -197,11 +201,11 @@ impl PPU {
         let addr = addr % 0x4000;
         match addr {
             0x0000..=0x1FFF => context.mapper.mem_ppu(addr).read(),
-            0x2000..=0x2FFF => {
-                self.name_tables[context.mapper.map_nametable(addr) as usize - 0x2000]
-            }
-            0x3000..=0x3FFF => {
-                self.name_tables[context.mapper.map_nametable(addr - 0x1000) as usize - 0x2000]
+            0x2000..=0x3FFF => {
+                let relative = context.mapper.map_nametable_relative(addr - 0x2000) as usize;
+                let table = relative / NAMETABLE_SIZE;
+                let entry = relative % NAMETABLE_SIZE;
+                self.nametables[table].index(entry).into()
             }
             _ => unreachable!(),
         }
@@ -242,10 +246,12 @@ impl PPU {
 
         match addr {
             0x0000..=0x1FFF => context.mapper.mem_ppu(addr).write(value),
-            0x2000..=0x2FFF => {
-                self.name_tables[context.mapper.map_nametable(addr) as usize - 0x2000] = value
+            0x2000..=0x3EFF => {
+                let relative = context.mapper.map_nametable_relative(addr - 0x2000) as usize;
+                let table = relative / NAMETABLE_SIZE;
+                let entry = relative % NAMETABLE_SIZE;
+                self.nametables[table].write(entry, value);
             }
-            0x3000..=0x3EFF => self.write(addr - 0x1000, value, context),
             0x3F10 => self.palette_idxs[0x0] = value,
             0x3F14 => self.palette_idxs[0x4] = value,
             0x3F18 => self.palette_idxs[0x8] = value,
@@ -280,10 +286,10 @@ impl PPU {
         self.last_frames.push(Instant::now());
 
         let framerate = 1000.0 / frame_time;
-        println!("Framerate: {}", framerate);
 
         self.render_pattern_tables(context);
         self.render_oam(context);
+        //self.render_nametables(context);
         /*for y in (0..(240 / 32)).map(|y| y * 32) {
             for x in (0..(256 / 32)).map(|x| x * 32) {
                 sdl_system.canvas().draw_rect(sdl2::rect::Rect::new(x as i32, y as i32, 32, 32)).unwrap();
@@ -379,17 +385,38 @@ impl PPU {
     }
 
     fn render_oam(&mut self, context: &Context) {
+        let height = if self.ctrl.sprite_size() { 16 } else { 8 };
         for row in 0..8 {
-            for col in 0..8 {
-                let height = if self.ctrl.sprite_size() { 16 } else { 8 };
-                for y in 0..height {
+            for y in 0..height {
+                for col in 0..8 {
                     for x in 0..8 {
                         let (_, color, _) = self.get_sprite_pixel(&self.oam[row * 8 + col], x as u8, y as u8, context);
 
-                        let p_x = x + col * 8 + 512;
-                        let p_y = y + row * height + 128;
+                        let p_x = x + col * 8 + 512 + 256;
+                        let p_y = y + row * height;
 
                         self.set_pixel_positioned(p_y as usize, p_x as usize, &color);
+                    }
+                }
+            }
+        }
+    }
+
+    fn render_nametables(&mut self, context: &Context) {
+        for row in 0..60 {
+            for y in 0..8 {
+                for col in 0..64 {
+                    for x in 0..8 {
+                        let p_x = x + col * 8;
+                        let p_y = y + row * 8;
+
+                        let addr = col + row * 32;
+
+                        let addr = context.mapper.map_nametable_relative(addr);
+                        
+                        let color = self.color_pattern_mapped(addr, (y % 8) as u8, (x % 8) as u8, context).0 * 85;
+
+                        self.set_pixel_positioned(p_y as usize, p_x as usize, &Color::RGB(color, color, color));
                     }
                 }
             }
@@ -446,20 +473,20 @@ impl PPU {
     ) -> (PalettedColor, Color) {
         let wrap = x >= 256 || y >= 256;
         x %= 256;
-        y %= 256;
+        y %= 240;
 
         let row = y / 8;
         let col = x / 8;
 
         let selected =
-            (self.selected_name_table() + wrap as usize * 0x400) as usize % self.name_tables.len();
+            (self.selected_name_table() + wrap as usize * NAMETABLE_SIZE) as usize % (self.nametables.len() * NAMETABLE_SIZE);
 
-        let name_table = &self.name_tables[selected..selected + 0x400];
+        let name_table = &self.nametables[selected / NAMETABLE_SIZE];
         let pattern_table = self.selected_patt_table_bg();
 
-        let tile_name = name_table[row * 32 + col];
+        let tile_name = name_table.pattern_at(row, col);
 
-        let palette_idx = get_palette_index(&name_table[0x3C0..0x400], row as u8, col as u8);
+        let palette_idx = get_palette_index(&name_table.attribute_table, row as u8, col as u8);
 
         let base_addr = pattern_table + 16 * tile_name as u16;
 
