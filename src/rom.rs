@@ -90,7 +90,12 @@ impl Rom {
         }
 
         let _prg_ram_eeprom_size = header[10];
-        let chr_ram_len = header[11] as usize;
+        let chr_ram_len = if header[11] != 0 {
+            64 << (header[11] & 0xF) as usize
+        }
+        else {
+            0
+        };
 
         let _timing = header[12];
 

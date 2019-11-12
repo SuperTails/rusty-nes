@@ -47,18 +47,16 @@ impl<'a> MemLocation<'a> for RamLocation<'a> {
 }
 
 #[derive(Debug, Clone)]
-pub struct RomLocation<'a> {
-    pub mem: &'a u8,
+pub struct RomLocation {
+    pub mem: u8,
 }
 
-impl<'a> MemLocation<'a> for RomLocation<'a> {
+impl MemLocation<'_> for RomLocation {
     fn read(&mut self) -> u8 {
-        *self.mem
+        self.mem
     }
 
-    fn write(&mut self, _value: u8) {
-        println!("Write to ROM??");
-    }
+    fn write(&mut self, _value: u8) {}
 }
 
 pub struct PPUNametable<'a> {

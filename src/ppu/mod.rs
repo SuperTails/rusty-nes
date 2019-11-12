@@ -17,6 +17,8 @@ struct PalettedColor(pub u8);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct NTSCColor(pub u8);
 
+const DEBUG_RENDER: bool = true;
+
 bitfield! {
     #[derive(Clone, Copy)]
     pub struct OAMEntryAttrs(u8);
@@ -308,14 +310,8 @@ impl PPU {
 
         let framerate = 1000.0 / frame_time;
 
-        self.render_pattern_tables(context);
-        self.render_oam(context);
-        self.render_nametables(context);
-        /*for y in (0..(240 / 32)).map(|y| y * 32) {
-            for x in (0..(256 / 32)).map(|x| x * 32) {
-                sdl_system.canvas().draw_rect(sdl2::rect::Rect::new(x as i32, y as i32, 32, 32)).unwrap();
-            }
-        }*/
+        println!("Framerate: {}", framerate);
+
         let mut sdl_system = context.sdl_system.borrow_mut();
         let creator = sdl_system.canvas().texture_creator();
         let tex = creator
@@ -329,21 +325,27 @@ impl PPU {
             .copy(&tex, None, Rect::new(0, 0, self.target.width(), self.target.height()))
             .unwrap();
 
-        let nametable_x = 512 + 128 + 256 * (self.selected_nametable() % 2);
-        let nametable_y = 240 * (self.selected_nametable() / 2);
-        sdl_system.canvas().set_draw_color(Color::RGB(255, 255, 255));
-        sdl_system
-            .canvas()
-            .draw_rect(Rect::new(nametable_x as i32, nametable_y as i32, 256, 240))
-            .unwrap();
+        if DEBUG_RENDER {
+            self.render_pattern_tables(context);
+            self.render_oam(context);
+            self.render_nametables(context);
 
-        let scrolled_x = nametable_x + (self.scroll >> 8) as usize;
-        let scrolled_y = nametable_y + (self.scroll & 0xFF) as usize;
-        sdl_system.canvas().set_draw_color(Color::RGB(255, 127, 127));
-        sdl_system
-            .canvas()
-            .draw_rect(Rect::new(scrolled_x as i32, scrolled_y as i32, 256, 240))
-            .unwrap();
+            let nametable_x = 512 + 128 + 256 * (self.selected_nametable() % 2);
+            let nametable_y = 240 * (self.selected_nametable() / 2);
+            sdl_system.canvas().set_draw_color(Color::RGB(255, 255, 255));
+            sdl_system
+                .canvas()
+                .draw_rect(Rect::new(nametable_x as i32, nametable_y as i32, 256, 240))
+                .unwrap();
+
+            let scrolled_x = nametable_x + (self.scroll >> 8) as usize;
+            let scrolled_y = nametable_y + (self.scroll & 0xFF) as usize;
+            sdl_system.canvas().set_draw_color(Color::RGB(255, 127, 127));
+            sdl_system
+                .canvas()
+                .draw_rect(Rect::new(scrolled_x as i32, scrolled_y as i32, 256, 240))
+                .unwrap();
+        }
 
         sdl_system.present();
         sdl_system.canvas().set_draw_color(Color::RGB(0, 0, 0));

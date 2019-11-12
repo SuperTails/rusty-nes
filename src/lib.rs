@@ -109,7 +109,22 @@ impl From<Rom> for Context {
             Box::new(Mapper0::new(rom.prg_rom, chr))
         } else if rom.mapper == 1 {
             /*Box::new(RefCell::new(Mapper1::new(rom.prg_rom, rom.chr_rom)))*/
-            Box::new(Mapper1::new(rom.prg_rom, [0; 0x2000].to_vec()))
+            let mut chr = rom.chr_rom;
+            let chr_is_rom = chr.len() != 0;
+            if !chr_is_rom {
+                if rom.chr_ram_len == 0 {
+                    println!("Assuming CHR RAM size of 8KiB");
+                    chr.resize(0x2000, 0);
+                }
+                else {
+                    println!("CHR RAM len: {:#X}", rom.chr_ram_len);
+                    chr.resize(rom.chr_ram_len, 0);
+                }
+            }
+            else {
+                println!("Using CHR ROM of size {:#X}", chr.len());
+            }
+            Box::new(Mapper1::new(rom.prg_rom, chr, chr_is_rom))
         } else if rom.mapper == 3 {
             Box::new(Mapper3::new(rom.prg_rom, rom.chr_rom))
         } else {
@@ -232,7 +247,7 @@ impl Context {
                 "Access to normally disabled APU or IO register at {:#04X}",
                 addr
             ),
-            0x4020..=0xFFFF => self.mapper.mem_cpu(addr),
+            0x4020..=0xFFFF => self.mapper.mem_cpu(addr, self),
         }
     }
 
