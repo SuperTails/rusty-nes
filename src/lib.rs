@@ -29,7 +29,7 @@ use mem_location::*;
 use apu::{APUAudio, APU};
 use controller::Controller;
 use cpu::CPU;
-use mapper::{Mapped, Mapper0, Mapper1, Mapper3};
+use mapper::{Mapped, Mapper0, Mapper1, Mapper3, Mapper4};
 use num_traits::cast::FromPrimitive;
 use ppu::PPU;
 use rom::Rom;
@@ -126,7 +126,9 @@ impl From<Rom> for Context {
             }
             Box::new(Mapper1::new(rom.prg_rom, chr, chr_is_rom))
         } else if rom.mapper == 3 {
-            Box::new(Mapper3::new(rom.prg_rom, rom.chr_rom, rom.prg_ram_len))
+            Box::new(Mapper3::new(rom.prg_rom, rom.chr_rom))
+        } else if rom.mapper == 4 {
+            Box::new(Mapper4::new(rom.prg_rom, rom.chr_rom, rom.prg_ram_len))
         } else {
             panic!()
         };

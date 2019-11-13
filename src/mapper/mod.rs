@@ -5,10 +5,12 @@ use super::Context;
 mod mapper0;
 mod mapper1;
 mod mapper3;
+mod mapper4;
 
 pub use mapper0::*;
 pub use mapper1::*;
 pub use mapper3::*;
+pub use mapper4::*;
 
 #[derive(FromPrimitive, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MirrorMode {
@@ -81,5 +83,6 @@ pub enum AnyMemLocation<'a> {
     Mapper0Ram(Mapper0Ram<'a>),
     Mapper1Location(Mapper1Location<'a>),
     Mapper3Location(Mapper3Location<'a>),
+    Mapper4Location(Mapper4Location<'a>),
 }
 

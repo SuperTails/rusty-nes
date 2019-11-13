@@ -1,7 +1,7 @@
 use crate::apu::APU;
 use crate::controller::Controller;
 use crate::cpu::CPU;
-use crate::mapper::{AnyMemLocation, Mapper0Ram, Mapper1Location, Mapper3Location};
+use crate::mapper::{AnyMemLocation, Mapper0Ram, Mapper1Location, Mapper3Location, Mapper4Location};
 use crate::ppu::{PPU, nametable::NAMETABLE_SIZE};
 use crate::Context;
 use enum_dispatch::enum_dispatch;
