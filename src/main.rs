@@ -24,7 +24,7 @@ fn main() {
         rom.mapper, rom.submapper
     );
     println!(
-        "PRG ROM has size {}, CHR ROM has size {}, and misc ROM has size {}",
+        "PRG ROM has size {:#X}, CHR ROM has size {:#X}, and misc ROM has size {}",
         rom.prg_rom.len(),
         rom.chr_rom.len(),
         rom.misc_rom.len()

@@ -12,6 +12,7 @@ pub struct Rom {
     pub mapper: u16,
     pub submapper: u8,
     pub chr_ram_len: usize,
+    pub prg_ram_len: usize,
 }
 
 #[derive(Debug)]
@@ -83,6 +84,12 @@ impl Rom {
 
         let version = header[7] >> 2;
 
+        let prg_ram_len = {
+            let mut prg_ram_chunks = header[8] as usize;
+            prg_ram_chunks = if prg_ram_chunks == 0 { 1 } else { prg_ram_chunks };
+            prg_ram_chunks * 0x2000
+        };
+
         if version != 2 && version != 0 {
             return Err(Box::new(RomReadError {
                 error: format!("Incorrect file version {}", (header[7] >> 2) & 0x3),
@@ -126,6 +133,7 @@ impl Rom {
             mapper,
             submapper,
             chr_ram_len,
+            prg_ram_len,
         })
     }
 }

@@ -114,13 +114,13 @@ pub enum PPURegInt {
 impl<'a> MemLocation<'a> for PPURegister<'a> {
     fn read(&mut self) -> u8 {
         let result = match self.reg {
-            PPURegInt::Ctrl => self.ppu.borrow().ctrl.0,
-            PPURegInt::Mask => self.ppu.borrow().mask.0,
+            PPURegInt::Ctrl => self.ppu.borrow().decay,
+            PPURegInt::Mask => self.ppu.borrow().decay,
             PPURegInt::Status => {
                 let mut ppu = self.ppu.borrow_mut();
-                    
+                let decay = ppu.decay & 0b00011111;
                 let new_status = ppu.status & !0x80;
-                std::mem::replace(&mut ppu.status, new_status)
+                std::mem::replace(&mut ppu.status, new_status) | decay
             }
             PPURegInt::Oamdata => {
                 let ppu = self.ppu.borrow_mut();
@@ -134,7 +134,7 @@ impl<'a> MemLocation<'a> for PPURegister<'a> {
                 }
             }
             PPURegInt::Scroll | PPURegInt::Addr | PPURegInt::Oamaddr => {
-                self.ppu.borrow().last_value
+                self.ppu.borrow().decay
             }
             PPURegInt::Data => {
                 let addr = self.ppu.borrow().address;
@@ -153,6 +153,7 @@ impl<'a> MemLocation<'a> for PPURegister<'a> {
 
     fn write(&mut self, value: u8) {
         self.ppu.borrow_mut().last_value = value;
+        self.ppu.borrow_mut().decay = value;
 
         match self.reg {
             PPURegInt::Ctrl => {

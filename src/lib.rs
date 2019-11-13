@@ -126,7 +126,7 @@ impl From<Rom> for Context {
             }
             Box::new(Mapper1::new(rom.prg_rom, chr, chr_is_rom))
         } else if rom.mapper == 3 {
-            Box::new(Mapper3::new(rom.prg_rom, rom.chr_rom))
+            Box::new(Mapper3::new(rom.prg_rom, rom.chr_rom, rom.prg_ram_len))
         } else {
             panic!()
         };

@@ -17,7 +17,7 @@ struct PalettedColor(pub u8);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct NTSCColor(pub u8);
 
-const DEBUG_RENDER: bool = true;
+const DEBUG_RENDER: bool = false;
 
 bitfield! {
     #[derive(Clone, Copy)]
@@ -131,6 +131,8 @@ pub struct PPU {
 
     pub target: Surface<'static>,
 
+    pub decay: u8,
+
     frame: usize,
 
     read_buffer: RefCell<u8>,
@@ -158,6 +160,7 @@ impl PPU {
             prev_nmi_state: false,
             ctrl: PPUCtrl(0),
             mask: PPUMask(0),
+            decay: 0,
             frame: 0,
             scanline: 0,
             pixel: 0,
