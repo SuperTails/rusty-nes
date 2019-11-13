@@ -1,5 +1,4 @@
 use std::cell::RefCell;
-use std::convert::TryInto;
 use crate::Context;
 use crate::mem_location::{MemLocation, RamLocation, RomLocation};
 use super::{Mapped, MapperResult, MirrorMode};
@@ -28,7 +27,7 @@ pub struct Mapper4 {
     prg_ram: RefCell<Vec<u8>>, // Optional
     prg_rom: Vec<u8>,      // 16KiB or 32KiB, not bankswitched
     chr: RefCell<Vec<u8>>, // Up to 2048KiB, bank size 8KiB
-
+    
     data: RefCell<Mapper4Data>,
 }
 
@@ -251,14 +250,14 @@ impl Mapped for Mapper4 {
         }
     }
 
-    fn mem_ppu<'a>(&'a self, addr: u16) -> MapperResult<'a> {
+    fn mem_ppu<'a>(&'a self, mut addr: u16) -> MapperResult<'a> {
         match addr {
             0x0000..=0x1FFF => {
                 let (reg, double) = self.data.borrow().ppu_bank_register(addr);
-                let size = if double { 0x800 } else { 0x400 };
+                addr &= if double { 0x7FF } else { 0x3FF };
 
-                let mapped_addr = (reg as usize * 0x400 + (addr % size) as usize) % self.chr.borrow().len();
-                Mapper4Location::PPU((&self.chr, mapped_addr.try_into().unwrap())).into()
+                let mapped_addr = (reg as usize * 0x400 + addr as usize) & (self.chr.borrow().len() - 1);
+                Mapper4Location::PPU((&self.chr, mapped_addr)).into()
             }
             _ => panic!(),
         }

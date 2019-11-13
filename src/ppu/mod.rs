@@ -6,6 +6,7 @@ use sdl2::rect::Rect;
 use sdl2::surface::Surface;
 use std::cell::RefCell;
 use std::time::Instant;
+use arrayvec::ArrayVec;
 
 pub mod nametable;
 
@@ -17,7 +18,7 @@ struct PalettedColor(pub u8);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct NTSCColor(pub u8);
 
-const DEBUG_RENDER: bool = false;
+const DEBUG_RENDER: bool = true;
 
 bitfield! {
     #[derive(Clone, Copy)]
@@ -146,12 +147,14 @@ pub struct PPU {
     scanline: usize,
     pixel: usize,
 
-    colors: Vec<Color>,
+    colors: [Color; 64],
 }
+
+const TARGET_SURFACE_WIDTH: usize = 1024 + 256;
 
 impl PPU {
     fn make_target(pixel_format: &PixelFormatEnum) -> Surface<'static> {
-        Surface::new(1024 + 256, 480, *pixel_format).unwrap()
+        Surface::new(TARGET_SURFACE_WIDTH as u32, 480, *pixel_format).unwrap()
     }
 
     pub fn new(pixel_format: &PixelFormatEnum) -> PPU {
@@ -190,9 +193,9 @@ impl PPU {
                 for col in 0..16 {
                     let base_addr = (row * 16 + col) * 16 + 0x1000 * table;
                     for y in 0..8 {
+                        let (hi_color, lo_color) = self.color_pattern_row(base_addr as u16, y as u8, context);
                         for x in 0..8 {
-                            let color = self
-                                .color_pattern_mapped(base_addr, y as u8, x as u8, context)
+                            let color = PPU::pair_to_paletted(hi_color, lo_color, x)
                                 .0
                                 * 85;
 
@@ -207,6 +210,24 @@ impl PPU {
         }
     }
 
+    fn color_pattern_row(
+        &self,
+        base_addr: u16,
+        row: u8,
+        context: &Context
+    ) -> (u8, u8) {
+        assert!(row < 8);
+
+        let lo_color = self.read(base_addr + row as u16, context).reverse_bits();
+        let hi_color = self.read(base_addr + (row + 8) as u16, context).reverse_bits();
+
+        (hi_color, lo_color)
+    }
+
+    fn pair_to_paletted(hi_color: u8, lo_color: u8, column: usize) -> PalettedColor {
+        PalettedColor(((hi_color >> column) & 1) << 1 | ((lo_color >> column) & 1))
+    }
+
     fn color_pattern_mapped(
         &self,
         base_addr: u16,
@@ -217,10 +238,10 @@ impl PPU {
         assert!(row < 8);
         assert!(col < 8);
 
-        let lo_color = self.read(base_addr + row as u16, context);
-        let hi_color = self.read(base_addr + (row + 8) as u16, context);
+        let lo_color = self.read(base_addr + row as u16, context).reverse_bits();
+        let hi_color = self.read(base_addr + (row + 8) as u16, context).reverse_bits();
 
-        PalettedColor(((hi_color >> (7 - col)) & 1) << 1 | ((lo_color >> (7 - col)) & 1))
+        PPU::pair_to_paletted(hi_color, lo_color, col as usize)
     }
 
     fn read_with_shadowed(&self, addr: u16, context: &Context) -> u8 {
@@ -300,9 +321,9 @@ impl PPU {
     }
 
     fn on_vblank_start(&mut self, context: &Context) {
-        while self.last_frames[0].elapsed().as_micros() / 10 < 16_666 {
+        /*while self.last_frames[0].elapsed().as_micros() / 10 < 16_666 {
             std::thread::sleep(std::time::Duration::from_micros(100));
-        }
+        }*/
 
         let frame_time = (self.last_frames[0].elapsed().as_micros() as f64
             / self.last_frames.len() as f64)
@@ -446,12 +467,9 @@ impl PPU {
     }
 
     fn render_nametables(&mut self, context: &Context) {
-        for y in 0..480 {
-            for x in 0..512 {
-                let p_x = x + 512 + 128;
-                let p_y = y;
-
-                let table = match((x / 256, y / 240)) {
+        for table_y in 0..2 {
+            for table_x in 0..2 {
+                let table = match((table_x, table_y)) {
                     (0, 0) => 0,
                     (1, 0) => 1,
                     (0, 1) => 2,
@@ -459,18 +477,27 @@ impl PPU {
                     _ => unreachable!(),
                 };
 
-                let row = (y % 240) / 8;
-                let col = (x % 256) / 8;
-
                 let table = &self.nametables[context.mapper.map_nametable_index(table)];
 
-                let pattern = table.pattern_at(row, col);
+                for tile_y in 0..30 {
+                    for tile_x in 0..32 {
+                        let pattern = table.pattern_at(tile_y, tile_x);
 
-                let pattern_addr = self.selected_patt_table_bg() + 16 * pattern as u16;
-                
-                let color = self.color_pattern_mapped(pattern_addr, (y % 8) as u8, (x % 8) as u8, context).0 * 85;
+                        let pattern_addr = self.selected_patt_table_bg() + 16 * pattern as u16;
+                                
+                        for y in 0..8 {
+                            let (hi_color, lo_color) = self.color_pattern_row(pattern_addr, y as u8, context);
+                            for x in 0..8 {
+                                let p_x = x + tile_x * 8 + table_x * 256 + 512 + 128;
+                                let p_y = y + tile_y * 8 + table_y * 240;
 
-                self.set_pixel_positioned(p_y as usize, p_x as usize, &Color::RGB(color, color, color));
+                                let color = PPU::pair_to_paletted(hi_color, lo_color, x).0 * 85;
+
+                                PPU::set_pixel_target(&mut self.target, p_y as usize, p_x as usize, &Color::RGB(color, color, color));
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -484,7 +511,7 @@ impl PPU {
         self.palette_idxs[idx as usize]
     }
 
-    fn get_colors() -> Vec<Color> {
+    fn get_colors() -> [Color; 64] {
         std::fs::read_to_string("./palette.txt")
             .unwrap()
             .lines()
@@ -497,7 +524,9 @@ impl PPU {
                 )
             })
             .map(|t| Color::from(t))
-            .collect()
+            .collect::<ArrayVec<[_; 64]>>()
+            .into_inner()
+            .unwrap()
     }
 
     fn selected_nametable(&self) -> usize {
@@ -552,7 +581,7 @@ impl PPU {
 
         let c = self.get_color(color, palette_idx, false);
 
-        (color, self.colors[c as usize % self.colors.len()])
+        (color, self.colors[c as usize % 64])
     }
 
     fn get_sprite_pixel(
@@ -596,7 +625,7 @@ impl PPU {
 
         let color = self.colors[self.get_color(sprite_color, object.attrs.palette_idx(), true)
             as usize
-            % self.colors.len()];
+            % 64];
 
         (sprite_color, color, object.attrs.priority())
     }
@@ -604,19 +633,18 @@ impl PPU {
     fn sprite_at(&self, x: usize, y: usize, context: &Context) -> Option<(PalettedColor, Color, bool, usize)> {
         if y >= 1 {
             let max_height = if self.ctrl.sprite_size() { 16 } else { 8 };
-            self.oam.iter().enumerate().filter_map(|(index, object)| {
-                if object.x as usize <= x && x < object.x as usize + 8
-                    && object.y as usize <= self.scanline - 2
-                        && y - 1 < object.y as usize + max_height {
+            let visible = self.oam.iter().enumerate().find(|(_, object)| {
+                object.y as usize <= y - 1
+                    && y - 1 < object.y as usize + max_height
+                        && object.x as usize <= x && x < object.x as usize + 8
+            });
 
-                        let s_x = self.pixel as u8 - object.x;
-                        let s_y = (self.scanline - 2) as u8 - object.y;
-                        let (pal_color, color, priority) = self.get_sprite_pixel(object, s_x, s_y, context);
-                        Some((pal_color, color, priority, index))
-                } else {
-                    None
-                }
-            }).next()
+            visible.map(|(index, object)| {
+                let s_x = x as u8 - object.x;
+                let s_y = (y - 1) as u8 - object.y;
+                let (pal_color, color, priority) = self.get_sprite_pixel(object, s_x, s_y, context);
+                (pal_color, color, priority, index)
+            })
         }
         else {
             None
@@ -666,7 +694,7 @@ impl PPU {
             }
 
             match ((bg_color.0).0, (sprite_color.0).0, sprite_color.2) {
-                (0, 0, _) => self.colors[self.palette_idxs[0] as usize % self.colors.len()],
+                (0, 0, _) => self.colors[self.palette_idxs[0] as usize % 64],
                 (0, _, _) => sprite_color.1,
                 (_, 0, _) => bg_color.1,
                 (_, _, false) => sprite_color.1,
@@ -674,7 +702,7 @@ impl PPU {
             }
         } else {
             if (bg_color.0).0 == 0 {
-                self.colors[self.palette_idxs[0] as usize % self.colors.len()]
+                self.colors[self.palette_idxs[0] as usize % 64]
             } else {
                 bg_color.1
             }
@@ -690,16 +718,19 @@ impl PPU {
         self.set_pixel_positioned(((self.scanline - 1) * 2) as usize + 1, self.pixel * 2 + 1, color);
     }
 
-    fn set_pixel_positioned(&mut self, row: usize, col: usize, color: &Color) {
-        let pixel_format = self.target.pixel_format_enum();
-        let size_per_pixel = pixel_format.byte_size_per_pixel();
-        let base = (col + row * self.target.width() as usize) * size_per_pixel;
-        self.target.with_lock_mut(|data| {
-            let pix = &mut data[base..base + size_per_pixel];
-            pix[0] = color.b;
-            pix[1] = color.g;
-            pix[2] = color.r;
+    fn set_pixel_target(target: &mut Surface, row: usize, col: usize, color: &Color) {
+        const SIZE_PER_PIXEL: usize = 4;
+        let base = (col + row * TARGET_SURFACE_WIDTH) * SIZE_PER_PIXEL;
+        target.with_lock_mut(|data| {
+            data[base + 0] = color.b;
+            data[base + 1] = color.g;
+            data[base + 2] = color.r;
         });
+
+    }
+
+    fn set_pixel_positioned(&mut self, row: usize, col: usize, color: &Color) {
+        PPU::set_pixel_target(&mut self.target, row, col, color);
     }
 
     pub fn incr_address(&mut self) {

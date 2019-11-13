@@ -127,9 +127,10 @@ impl APU {
             total += self.noise.output();
         }
 
+        /* TODO: Reenable
         if self.dmc_enable {
             total += self.dmc.output();
-        }
+        }*/
 
         total
     }
