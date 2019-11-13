@@ -321,9 +321,9 @@ impl PPU {
     }
 
     fn on_vblank_start(&mut self, context: &Context) {
-        /*while self.last_frames[0].elapsed().as_micros() / 10 < 16_666 {
+        while self.last_frames[0].elapsed().as_micros() / 10 < 16_666 {
             std::thread::sleep(std::time::Duration::from_micros(100));
-        }*/
+        }
 
         let frame_time = (self.last_frames[0].elapsed().as_micros() as f64
             / self.last_frames.len() as f64)
