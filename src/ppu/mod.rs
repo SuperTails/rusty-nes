@@ -160,6 +160,14 @@ impl PPU {
         Surface::new(TARGET_SURFACE_WIDTH as u32, 480, *pixel_format).unwrap()
     }
 
+    fn y_scroll(&self) -> u16 {
+        self.scroll & 0xFF
+    }
+
+    fn x_scroll(&self) -> u16 {
+        self.scroll >> 8
+    }
+
     pub fn new(pixel_format: &PixelFormatEnum) -> PPU {
         PPU {
             dma_request: None,
@@ -381,8 +389,8 @@ impl PPU {
                 .draw_rect(Rect::new(nametable_x as i32, nametable_y as i32, 256, 240))
                 .unwrap();
 
-            let scrolled_x = nametable_x + (self.scroll >> 8) as usize;
-            let scrolled_y = nametable_y + (self.scroll & 0xFF) as usize;
+            let scrolled_x = nametable_x + self.x_scroll() as usize;
+            let scrolled_y = nametable_y + self.y_scroll() as usize;
             sdl_system.canvas().set_draw_color(Color::RGB(255, 127, 127));
             sdl_system
                 .canvas()
@@ -707,20 +715,17 @@ impl PPU {
     }
 
     fn for_each_pixel(&mut self, context: &Context) {
-        let x_scroll = self.scroll >> 8;
-        let y_scroll = self.scroll & 0xFF;
-
         if self.pixel as usize >= 256 {
             return;
         }
 
         let show_bg_pixel = self.mask.render_background()
-            && (self.mask.mask_background() || (self.pixel + x_scroll as usize) >= 8);
+            && (self.mask.mask_background() || (self.pixel + self.x_scroll() as usize) >= 8);
 
         let bg_color: Option<_> = if show_bg_pixel {
             Some(self.get_background_color(
-                self.pixel + x_scroll as usize,
-                self.scanline + y_scroll as usize,
+                self.pixel + self.x_scroll() as usize,
+                self.scanline + self.y_scroll() as usize,
                 context
             ))
         } else {

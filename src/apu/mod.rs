@@ -7,6 +7,7 @@ mod noise_gen;
 mod pulse_gen;
 mod triangle_gen;
 mod dmc;
+mod envelope;
 
 use noise_gen::NoiseGen;
 use pulse_gen::PulseGen;
@@ -109,8 +110,6 @@ impl APU {
 
     // TODO: Mixing
     pub fn output(&self) -> f64 {
-        let mut total = 0;
-
         let pulse_1_out = if self.pulse_1_enable { self.pulse_1.output() } else { 0 };
         let pulse_2_out = if self.pulse_2_enable { self.pulse_2.output() } else { 0 };
 
@@ -122,7 +121,7 @@ impl APU {
         };
 
         let tri_out = if self.triangle_enable { self.triangle_gen.output() } else { 0 };
-        let noise_out = if false && self.noise_enable { self.noise.output() } else { 0 };
+        let noise_out = if self.noise_enable { self.noise.output() } else { 0 };
         let dmc_out = if self.dmc_enable { self.dmc.output() } else { 0 };
 
         let other_out = if tri_out == 0 && noise_out == 0 && dmc_out == 0 {
@@ -157,11 +156,9 @@ impl APU {
                 {
                     let is_half_frame = self.cycle == 7456 * 2 + 1 || self.cycle == 18640 * 2 + 1;
                     self.triangle_gen.on_clock(is_half_frame);
-                    if is_half_frame {
-                        self.pulse_1.on_clock();
-                        self.pulse_2.on_clock();
-                        self.noise.on_clock();
-                    }
+                        self.pulse_1.on_clock(is_half_frame);
+                        self.pulse_2.on_clock(is_half_frame);
+                        self.noise.on_clock(is_half_frame);
                 }
             } else {
                 // 4-Step sequence
@@ -172,11 +169,9 @@ impl APU {
                 {
                     let is_half_frame = self.cycle == 7456 * 2 + 1 || self.cycle == 14914 * 2 + 1;
                     self.triangle_gen.on_clock(is_half_frame);
-                    if is_half_frame {
-                        self.pulse_1.on_clock();
-                        self.pulse_2.on_clock();
-                        self.noise.on_clock();
-                    }
+                    self.pulse_1.on_clock(is_half_frame);
+                    self.pulse_2.on_clock(is_half_frame);
+                    self.noise.on_clock(is_half_frame);
                 }
             }
 

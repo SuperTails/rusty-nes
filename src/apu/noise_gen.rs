@@ -1,21 +1,11 @@
-bitfield! {
-    #[derive(Clone, Copy)]
-    pub struct NoiseGenCtrl(u8);
-    impl Debug;
-
-    volume, set_volume: 3, 0;
-
-    constant_volume, set_constant_volume: 4;
-
-    halt_length_count, set_halt: 5;
-}
+use super::envelope::Envelope;
 
 const PERIODS: [u16; 0x10] = [
     4, 8, 16, 32, 64, 96, 128, 160, 202, 254, 380, 508, 762, 1016, 2034, 4068,
 ];
 
 pub struct NoiseGen {
-    ctrl: NoiseGenCtrl,
+    ctrl: Envelope,
     length_count: u8,
     mode: bool,
     period: u8,
@@ -27,7 +17,7 @@ pub struct NoiseGen {
 impl NoiseGen {
     pub fn new() -> NoiseGen {
         NoiseGen {
-            ctrl: NoiseGenCtrl(0),
+            ctrl: Envelope::new(),
             length_count: 0,
             mode: false,
             period: 0,
@@ -58,10 +48,12 @@ impl NoiseGen {
         }
     }
 
-    pub fn on_clock(&mut self) {
-        if !self.ctrl.halt_length_count() && self.length_count > 0 {
+    pub fn on_clock(&mut self, is_half_frame: bool) {
+        if !self.ctrl.do_loop() && self.length_count > 0 && is_half_frame {
             self.length_count -= 1;
         }
+
+        self.ctrl.on_clock();
     }
 
     pub fn on_apu_cycle(&mut self) {
@@ -76,13 +68,16 @@ impl NoiseGen {
 
     pub fn write_reg(&mut self, reg: usize, value: u8) {
         match reg {
-            0xC => self.ctrl = NoiseGenCtrl(value),
+            0xC => self.ctrl.write(value & 0x3F),
             0xD => {}
             0xE => {
                 self.mode = value & 0x80 != 0;
                 self.period = value & 0b1111;
             }
-            0xF => self.length_count = value >> 3,
+            0xF => {
+                self.length_count = value >> 3;
+                self.ctrl.start();       
+            }
             _ => panic!(),
         }
     }
