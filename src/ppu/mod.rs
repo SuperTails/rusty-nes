@@ -134,6 +134,8 @@ pub struct PPU {
 
     pub decay: u8,
 
+    pub sprite_0_hit: Option<(usize, usize)>,
+
     frame: usize,
 
     read_buffer: RefCell<u8>,
@@ -164,6 +166,7 @@ impl PPU {
             ctrl: PPUCtrl(0),
             mask: PPUMask(0),
             decay: 0,
+            sprite_0_hit: None,
             frame: 0,
             scanline: 0,
             pixel: 0,
@@ -388,6 +391,10 @@ impl PPU {
         sdl_system.canvas().clear();
 
         println!("VBlank occurred");
+
+        println!("Selected table: {:#X}", self.selected_nametable());
+
+        self.sprite_0_hit = None;
 
         self.status |= 0x80;
         self.vblank_occurred = true;
@@ -707,6 +714,7 @@ impl PPU {
             // TODO: I think this should only be triggered once
             // and also check sprite-0 hit conditions properly
             if sprite_color.3 == 0 && (bg_color.0).0 != 0 && (sprite_color.0).0 != 0 && self.pixel != 255 && self.scanline < 239 {
+                self.sprite_0_hit = Some((self.pixel, self.scanline));
                 self.status |= 0x40;
             }
 

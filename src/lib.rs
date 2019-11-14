@@ -40,6 +40,7 @@ use sdl2::keyboard::Keycode;
 use sdl2::render::WindowCanvas;
 use sdl2::{AudioSubsystem, EventPump, Sdl, VideoSubsystem};
 use std::cell::RefCell;
+use std::io::{Read, Write};
 use config::{Config, CONTROLLER_POLL_INTERVAL};
 
 
@@ -65,82 +66,6 @@ pub struct Context {
     pub cycle: usize,
     pub cpu_pause: RefCell<usize>,
     controller_poll_timer: usize,
-}
-
-impl From<Rom> for Context {
-    fn from(rom: Rom) -> Context {
-        let mapper: Box<dyn Mapped> = if rom.mapper == 0 {
-            let chr = if rom.chr_rom.len() == 0 {
-                // TODO: Figure this out
-                // let len = rom.chr_ram_len;
-                let len = 0x2000;
-
-                let mut chr = Vec::with_capacity(len);
-                println!("CHR RAM length: {}", len);
-                chr.resize(len, 0);
-                chr
-            } else {
-                rom.chr_rom
-            };
-
-            Box::new(Mapper0::new(rom.prg_rom, chr))
-        } else if rom.mapper == 1 {
-            /*Box::new(RefCell::new(Mapper1::new(rom.prg_rom, rom.chr_rom)))*/
-            let mut chr = rom.chr_rom;
-            let chr_is_rom = chr.len() != 0;
-            if !chr_is_rom {
-                if rom.chr_ram_len == 0 {
-                    println!("Assuming CHR RAM size of 8KiB");
-                    chr.resize(0x2000, 0);
-                }
-                else {
-                    println!("CHR RAM len: {:#X}", rom.chr_ram_len);
-                    chr.resize(rom.chr_ram_len, 0);
-                }
-            }
-            else {
-                println!("Using CHR ROM of size {:#X}", chr.len());
-            }
-            Box::new(Mapper1::new(rom.prg_rom, chr, chr_is_rom))
-        } else if rom.mapper == 3 {
-            Box::new(Mapper3::new(rom.prg_rom, rom.chr_rom))
-        } else if rom.mapper == 4 {
-            Box::new(Mapper4::new(rom.prg_rom, rom.chr_rom, rom.prg_ram_len))
-        } else {
-            panic!()
-        };
-
-        let desired = AudioSpecDesired {
-            freq: Some(16000),
-            channels: Some(1),
-            samples: None,
-        };
-
-        let (apu, apu_audio) = APU::new();
-
-        let mut sdl_system = SDLSystem::new();
-        sdl_system.audio_device = Some(
-            sdl_system
-                .audio_subsystem
-                .open_playback(None, &desired, move |_spec| apu_audio)
-                .unwrap(),
-        );
-
-        sdl_system.audio_device.as_ref().unwrap().resume();
-
-        Context {
-            hit_breakpoint: false,
-            mapper,
-            cycle: 0,
-            cpu_pause: RefCell::new(0),
-            ppu: RefCell::new(PPU::new(&sdl_system.canvas().default_pixel_format())),
-            cpu: RefCell::new(CPU::new()),
-            apu: RefCell::new(apu),
-            controller: RefCell::new(Controller::new()),
-            sdl_system: RefCell::new(sdl_system),
-            controller_poll_timer: CONTROLLER_POLL_INTERVAL,
-        }
-    }
 }
 
 pub struct SDLSystem {
@@ -184,6 +109,81 @@ impl SDLSystem {
 }
 
 impl Context {
+    pub fn new(rom: Rom, savedata: Option<Vec<u8>>) -> Context {
+        let mapper: Box<dyn Mapped> = if rom.mapper == 0 {
+            let chr = if rom.chr_rom.len() == 0 {
+                // TODO: Figure this out
+                // let len = rom.chr_ram_len;
+                let len = 0x2000;
+
+                let mut chr = Vec::with_capacity(len);
+                println!("CHR RAM length: {}", len);
+                chr.resize(len, 0);
+                chr
+            } else {
+                rom.chr_rom
+            };
+
+            Box::new(Mapper0::new(rom.prg_rom, chr))
+        } else if rom.mapper == 1 {
+            /*Box::new(RefCell::new(Mapper1::new(rom.prg_rom, rom.chr_rom)))*/
+            let mut chr = rom.chr_rom;
+            let chr_is_rom = chr.len() != 0;
+            if !chr_is_rom {
+                if rom.chr_ram_len == 0 {
+                    println!("Assuming CHR RAM size of 8KiB");
+                    chr.resize(0x2000, 0);
+                }
+                else {
+                    println!("CHR RAM len: {:#X}", rom.chr_ram_len);
+                    chr.resize(rom.chr_ram_len, 0);
+                }
+            }
+            else {
+                println!("Using CHR ROM of size {:#X}", chr.len());
+            }
+            Box::new(Mapper1::new(rom.prg_rom, savedata, chr, chr_is_rom))
+        } else if rom.mapper == 3 {
+            Box::new(Mapper3::new(rom.prg_rom, rom.chr_rom))
+        } else if rom.mapper == 4 {
+            Box::new(Mapper4::new(rom.prg_rom, rom.chr_rom, rom.prg_ram_len))
+        } else {
+            panic!()
+        };
+
+        let desired = AudioSpecDesired {
+            freq: Some(16000),
+            channels: Some(1),
+            samples: None,
+        };
+
+        let (apu, apu_audio) = APU::new();
+
+        let mut sdl_system = SDLSystem::new();
+        sdl_system.audio_device = Some(
+            sdl_system
+                .audio_subsystem
+                .open_playback(None, &desired, move |_spec| apu_audio)
+                .unwrap(),
+        );
+
+        sdl_system.audio_device.as_ref().unwrap().resume();
+
+        Context {
+            hit_breakpoint: false,
+            mapper,
+            cycle: 0,
+            cpu_pause: RefCell::new(0),
+            ppu: RefCell::new(PPU::new(&sdl_system.canvas().default_pixel_format())),
+            cpu: RefCell::new(CPU::new()),
+            apu: RefCell::new(apu),
+            controller: RefCell::new(Controller::new()),
+            sdl_system: RefCell::new(sdl_system),
+            controller_poll_timer: CONTROLLER_POLL_INTERVAL,
+        }
+
+    }
+
     pub fn cpu_address<'a>(&'a self, addr: u16) -> AnyMemLocation<'a> {
         match addr {
             0x0000..=0x1FFF => CPURamLoc {
@@ -278,7 +278,7 @@ impl Context {
         self.cpu_address(addr).write(value)
     }
 
-    pub fn next(&mut self) {
+    pub fn next(&mut self) -> bool {
         let mut should_run = false;
 
         if self.controller_poll_timer > 0 {
@@ -297,7 +297,7 @@ impl Context {
                         keycode: Some(Keycode::Escape),
                         ..
                     } => {
-                        std::process::exit(0);
+                        return true;
                     }
                     Event::KeyDown {
                         keycode: Some(Keycode::C),
@@ -363,6 +363,8 @@ impl Context {
                 }
             }
         }
+
+        return false;
     }
 }
 
@@ -383,7 +385,19 @@ pub fn run(config: &Config) {
         rom.misc_rom.len()
     );
 
-    let mut ctx = Context::from(rom);
+    let battery_backed = rom.battery_backed;
+
+    let mem_path = config.rom_path.with_extension("save");
+
+    let savedata = if mem_path.exists() {
+        let mut savedata = Vec::new();
+        std::fs::File::open(&mem_path).unwrap().read_to_end(&mut savedata).unwrap();
+        Some(savedata)
+    } else {
+        None
+    };
+
+    let mut ctx = Context::new(rom, savedata);
 
     if config.verify {
         let log_path = config.rom_path.with_extension("log");
@@ -448,11 +462,27 @@ pub fn run(config: &Config) {
                 &actual,
                 "Frame: {:?}", ctx.ppu.borrow().frame()
             );
-            ctx.next();
+
+            while !ctx.next() {}
         }
     } else {
-        loop {
-            ctx.next();
+        while !ctx.next() {}
+
+        if battery_backed {
+            if mem_path.exists() {
+                let backup_path = mem_path.to_owned().with_extension("save.bak");
+                std::fs::copy(&mem_path, backup_path).unwrap();
+            }
+
+            let mut result = [0; 0x2000];
+
+            for i in 0..result.len() {
+                result[i] = ctx.mapper.mem_cpu((0x6000 + i) as u16, &ctx).read();
+            }
+
+            let mut savefile = std::fs::File::create(mem_path).unwrap();
+
+            assert_eq!(savefile.write(&result).unwrap(), 0x2000);
         }
     }
 }

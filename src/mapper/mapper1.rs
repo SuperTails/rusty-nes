@@ -104,21 +104,25 @@ impl Mapper1Impl {
 }
 
 impl Mapper1 {
-    pub fn new(prg_rom: Vec<u8>, chr: Vec<u8>, chr_is_rom: bool) -> Mapper1 {
+    pub fn new(prg_rom: Vec<u8>, prg_ram: Option<Vec<u8>>, chr: Vec<u8>, chr_is_rom: bool) -> Mapper1 {
         assert!(prg_rom.len() == 0x20000 || prg_rom.len() == 0x40000);
 
-        let mut prg_ram = [90; 0x2000].to_vec();
-        for val in prg_ram[10..=0x51D].iter_mut() { *val = 0; }
-        for val in prg_ram[0x521..=0x525].iter_mut() { *val = 165; }
-        for val in prg_ram[0x52A..=0x52F].iter_mut() { *val = 255; }
-        for val in prg_ram[0x02..=0x19].iter_mut() { *val = 36; }
-        prg_ram[0x1FFF] = 165;
-        prg_ram[0x0524] = 1;
-        prg_ram[0x0526] = 1;
-        prg_ram[0x0528] = 1;
-        prg_ram[0x525] = 32;
-        prg_ram[0x527] = 32;
-        prg_ram[0x529] = 32;
+        let prg_ram = prg_ram.unwrap_or_else(|| {
+            // TODO: What is the meaning of this
+            let mut prg_ram = [90; 0x2000].to_vec();
+            for val in prg_ram[10..=0x51D].iter_mut() { *val = 0; }
+            for val in prg_ram[0x521..=0x525].iter_mut() { *val = 165; }
+            for val in prg_ram[0x52A..=0x52F].iter_mut() { *val = 255; }
+            for val in prg_ram[0x02..=0x19].iter_mut() { *val = 36; }
+            prg_ram[0x1FFF] = 165;
+            prg_ram[0x0524] = 1;
+            prg_ram[0x0526] = 1;
+            prg_ram[0x0528] = 1;
+            prg_ram[0x525] = 32;
+            prg_ram[0x527] = 32;
+            prg_ram[0x529] = 32;
+            prg_ram
+        });
 
         Mapper1 {
             last_mmio_write: RefCell::new(0),

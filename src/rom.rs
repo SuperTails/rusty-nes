@@ -13,6 +13,7 @@ pub struct Rom {
     pub submapper: u8,
     pub chr_ram_len: usize,
     pub prg_ram_len: usize,
+    pub battery_backed: bool,
 }
 
 #[derive(Debug)]
@@ -73,7 +74,7 @@ impl Rom {
         let submapper = header[8] >> 4;
         let _fs_mode = (header[6] >> 3) & 1 != 0;
         let trainer = (header[6] >> 2) & 1 != 0;
-        let _battery = (header[6] >> 1) & 1 != 0;
+        let battery_backed = (header[6] >> 1) & 1 != 0;
         let _mirro_t = (header[6] >> 0) & 1 != 0;
 
         if header[7] & 0b11 != 0b00 {
@@ -134,6 +135,7 @@ impl Rom {
             submapper,
             chr_ram_len,
             prg_ram_len,
+            battery_backed,
         })
     }
 }

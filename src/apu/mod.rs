@@ -108,31 +108,30 @@ impl APU {
     }
 
     // TODO: Mixing
-    pub fn output(&self) -> u8 {
+    pub fn output(&self) -> f64 {
         let mut total = 0;
 
-        if self.triangle_enable {
-            total += self.triangle_gen.output();
+        let pulse_1_out = if self.pulse_1_enable { self.pulse_1.output() } else { 0 };
+        let pulse_2_out = if self.pulse_2_enable { self.pulse_2.output() } else { 0 };
+
+        let pulse_out = if pulse_1_out == 0 && pulse_2_out == 0 {
+            0.0
         }
+        else {
+            95.88 / (8128.0 / (pulse_1_out as f64 + pulse_2_out as f64) + 100.0)
+        };
 
-        if self.pulse_1_enable {
-            total += self.pulse_1.output();
-        }
+        let tri_out = if self.triangle_enable { self.triangle_gen.output() } else { 0 };
+        let noise_out = if false && self.noise_enable { self.noise.output() } else { 0 };
+        let dmc_out = if self.dmc_enable { self.dmc.output() } else { 0 };
 
-        if self.pulse_2_enable {
-            total += self.pulse_2.output();
-        }
+        let other_out = if tri_out == 0 && noise_out == 0 && dmc_out == 0 {
+            0.0
+        } else {
+            159.79 / (1.0 / (tri_out as f64 / 8227.0 + noise_out as f64 / 0.12241 + dmc_out as f64 / 22638.0) + 100.0)
+        };
 
-        if self.noise_enable {
-            total += self.noise.output();
-        }
-
-        /* TODO: Reenable
-        if self.dmc_enable {
-            total += self.dmc.output();
-        }*/
-
-        total
+        pulse_out + other_out
     }
 
     // TODO: Delay in settings changing
@@ -204,10 +203,10 @@ impl APU {
                 }
             }
 
-            if self.cycle % 56 == 0 {
+            if self.cycle % (56 * 2) == 0 {
                 {
-                    self.audio_data.lock().unwrap()[self.audio_data_idx] =
-                        self.output() as f32 / 64.0;
+                    const MASTER_VOLUME: f32 = 1.0;
+                    self.audio_data.lock().unwrap()[self.audio_data_idx] = self.output() as f32 * MASTER_VOLUME;
                 }
 
                 self.audio_data_idx += 1;
