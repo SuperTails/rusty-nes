@@ -130,7 +130,7 @@ pub struct PPU {
 
     pub dma_request: Option<u8>,
 
-    pub target: Surface<'static>,
+    pub target: RefCell<Surface<'static>>,
 
     pub decay: u8,
 
@@ -153,6 +153,7 @@ pub struct PPU {
 }
 
 const TARGET_SURFACE_WIDTH: usize = 1024 + 256;
+const SIZE_PER_PIXEL: usize = 4;
 
 impl PPU {
     fn make_target(pixel_format: &PixelFormatEnum) -> Surface<'static> {
@@ -172,7 +173,7 @@ impl PPU {
             pixel: 0,
             last_value: 0,
             last_frames: [Instant::now(); 10].to_vec(),
-            target: PPU::make_target(pixel_format),
+            target: RefCell::new(PPU::make_target(pixel_format)),
             status: 0,
             vblank_occurred: false,
             cycles: 0,
@@ -202,7 +203,7 @@ impl PPU {
         self.frame
     }
 
-    fn render_pattern_tables(&mut self, context: &Context) {
+    fn render_pattern_tables(&self, context: &Context, dest: &mut [u8]) {
         for table in 0..2 {
             for row in 0..16 {
                 for col in 0..16 {
@@ -217,7 +218,9 @@ impl PPU {
                             let p_x = x + col * 8 + 512;
                             let p_y = y + row * 8 + table * 128;
 
-                            self.set_pixel_positioned(p_y as usize, p_x as usize, &Color::RGB(color, color, color));
+                            let base = (p_x + p_y * TARGET_SURFACE_WIDTH) * SIZE_PER_PIXEL;
+
+                            for i in 0..3 { dest[base + i] = color }
                         }
                     }
                 }
@@ -355,19 +358,20 @@ impl PPU {
         let creator = sdl_system.canvas().texture_creator();
         let tex = creator
             .create_texture_from_surface(
-                &mut self.target
-                
+                &*self.target.borrow()
             )
             .unwrap();
         sdl_system
             .canvas()
-            .copy(&tex, None, Rect::new(0, 0, self.target.width(), self.target.height()))
+            .copy(&tex, None, Rect::new(0, 0, self.target.borrow().width(), self.target.borrow().height()))
             .unwrap();
 
         if DEBUG_RENDER {
-            self.render_pattern_tables(context);
+            self.target.borrow_mut().with_lock_mut(|data| {
+                self.render_pattern_tables(context, data);
+                self.render_nametables(context, data);
+            });
             self.render_oam(context);
-            self.render_nametables(context);
 
             let nametable_x = 512 + 128 + 256 * (self.selected_nametable() % 2);
             let nametable_y = 240 * (self.selected_nametable() / 2);
@@ -477,20 +481,22 @@ impl PPU {
         for row in 0..8 {
             for y in 0..height {
                 for col in 0..8 {
+                    let object = &self.oam[row * 8 + col];
+                    let color_row = self.color_sprite_row(object, y as u8, context);
                     for x in 0..8 {
-                        let (_, color, _) = self.get_sprite_pixel(&self.oam[row * 8 + col], x as u8, y as u8, context);
+                        let (_, color, _) = self.sprite_color_from_row(object, color_row.0, color_row.1, x as u8);
 
                         let p_x = x + col * 8 + 512;
                         let p_y = y + row * height + 256;
 
-                        self.set_pixel_positioned(p_y as usize, p_x as usize, &color);
+                        PPU::set_pixel_target(&mut self.target.borrow_mut(), p_y as usize, p_x as usize, &color);
                     }
                 }
             }
         }
     }
 
-    fn render_nametables(&mut self, context: &Context) {
+    fn render_nametables(&self, context: &Context, dest: &mut [u8]) {
         for table_y in 0..2 {
             for table_x in 0..2 {
                 let table = match((table_x, table_y)) {
@@ -516,8 +522,10 @@ impl PPU {
                                 let p_y = y + tile_y * 8 + table_y * 240;
 
                                 let color = PPU::pair_to_paletted(hi_color, lo_color, x).0 * 85;
+                                
+                                let base = (p_x + p_y * TARGET_SURFACE_WIDTH) * SIZE_PER_PIXEL;
 
-                                PPU::set_pixel_target(&mut self.target, p_y as usize, p_x as usize, &Color::RGB(color, color, color));
+                                for i in 0..3 { dest[base + i] = color }
                             }
                         }
                     }
@@ -608,24 +616,17 @@ impl PPU {
         (color, self.colors[c as usize % 64])
     }
 
-    fn get_sprite_pixel(
+    fn color_sprite_row(
         &self,
         object: &OAMEntry,
-        mut s_x: u8,
         mut s_y: u8,
-        context: &Context,
-    ) -> (PalettedColor, Color, bool) {
+        context: &Context
+    ) -> (u8, u8) {
         let max_height = if self.ctrl.sprite_size() { 16 } else { 8 };
-
-        assert!(s_x < 8);
         assert!(s_y < max_height);
 
         let mut is_bottom = s_y >= 8;
         s_y %= 8;
-
-        if object.attrs.horiz_flip() {
-            s_x = 7 - s_x;
-        }
 
         if object.attrs.vert_flip() {
             is_bottom = !is_bottom;
@@ -645,13 +646,43 @@ impl PPU {
         };
 
         let base_addr = selected_patt_table + 16 * index as u16;
-        let sprite_color = self.color_pattern_mapped(base_addr, s_y, s_x, context);
+        self.color_pattern_row(base_addr, s_y, context)
+    }
+
+    fn sprite_color_from_row(
+        &self,
+        object: &OAMEntry,
+        hi_color: u8,
+        lo_color: u8,
+        mut s_x: u8
+    ) -> (PalettedColor, Color, bool) {
+        assert!(s_x < 8);
+
+        if object.attrs.horiz_flip() {
+            s_x = 7 - s_x;
+        }
+
+        let sprite_color = PPU::pair_to_paletted(hi_color, lo_color, s_x as usize);
 
         let color = self.colors[self.get_color(sprite_color, object.attrs.palette_idx(), true)
             as usize
             % 64];
 
         (sprite_color, color, object.attrs.priority())
+    }
+
+    fn get_sprite_pixel(
+        &self,
+        object: &OAMEntry,
+        s_x: u8,
+        s_y: u8,
+        context: &Context,
+    ) -> (PalettedColor, Color, bool) {
+        assert!(s_x < 8);
+
+        let (hi_color, lo_color) = self.color_sprite_row(object, s_y, context);
+
+        self.sprite_color_from_row(object, hi_color, lo_color, s_x)
     }
 
     fn sprite_at(&self, x: usize, y: usize, context: &Context) -> Option<(PalettedColor, Color, bool, usize)> {
@@ -744,7 +775,6 @@ impl PPU {
     }
 
     fn set_pixel_target(target: &mut Surface, row: usize, col: usize, color: &Color) {
-        const SIZE_PER_PIXEL: usize = 4;
         let base = (col + row * TARGET_SURFACE_WIDTH) * SIZE_PER_PIXEL;
         target.with_lock_mut(|data| {
             data[base + 0] = color.b;
@@ -755,7 +785,7 @@ impl PPU {
     }
 
     fn set_pixel_positioned(&mut self, row: usize, col: usize, color: &Color) {
-        PPU::set_pixel_target(&mut self.target, row, col, color);
+        PPU::set_pixel_target(&mut self.target.borrow_mut(), row, col, color);
     }
 
     pub fn incr_address(&mut self) {
