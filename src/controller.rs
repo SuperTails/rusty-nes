@@ -60,8 +60,11 @@ impl Controller {
                     self.shift = self.state;
                 }
 
-                let new_shift = self.shift >> 1;
-                std::mem::replace(&mut self.shift, new_shift)
+                let result = self.shift & 1;
+
+                self.shift >>= 1;
+
+                result
             }
             _ => panic!("Unrecognized controller register {}", reg),
         }

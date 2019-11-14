@@ -86,13 +86,13 @@ impl AddressingMode {
             }
             AddressingMode::Abs => (Address::Addressed(cpu.read_wide_nowrap(cpu.pc + 1, ctx)), 0),
             AddressingMode::AbsX => {
-                let addr = cpu.read_wide(cpu.pc + 1, ctx);
+                let addr = cpu.read_wide_nowrap(cpu.pc + 1, ctx);
                 let eff_addr = addr.wrapping_add(cpu.x as u16);
                 let cycles = if addr >> 8 != eff_addr >> 8 { 1 } else { 0 };
                 (Address::Addressed(eff_addr), cycles)
             }
             AddressingMode::AbsY => {
-                let addr = cpu.read_wide(cpu.pc + 1, ctx);
+                let addr = cpu.read_wide_nowrap(cpu.pc + 1, ctx);
                 let eff_addr = addr.wrapping_add(cpu.y as u16);
                 let cycles = if addr >> 8 != eff_addr >> 8 { 1 } else { 0 };
                 (Address::Addressed(eff_addr), cycles)
@@ -181,11 +181,13 @@ impl Instruction {
         // Check for page boundary crossings
         // if this is a branch instruction
         if self.mode == AddressingMode::Rel {
-            if cpu.pc >> 8 != last_pc >> 8 {
+            let unbranched = last_pc + self.mode.len() as u16;
+            let taken = last_pc != cpu.pc;
+
+            if taken {
                 cycles += 1;
-            } else if cpu.pc != last_pc {
-                cycles += 1;
-                if (cpu.pc + self.mode.len() as u16) >> 8 != last_pc >> 8 {
+
+                if unbranched >> 8 != (cpu.pc + self.mode.len() as u16) >> 8 {
                     cycles += 1;
                 }
             }

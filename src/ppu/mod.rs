@@ -187,6 +187,18 @@ impl PPU {
         }
     }
 
+    pub fn pixel(&self) -> usize {
+        self.pixel
+    }
+
+    pub fn scanline(&self) -> usize {
+        self.scanline
+    }
+
+    pub fn frame(&self) -> usize {
+        self.frame
+    }
+
     fn render_pattern_tables(&mut self, context: &Context) {
         for table in 0..2 {
             for row in 0..16 {
@@ -375,7 +387,7 @@ impl PPU {
         sdl_system.canvas().set_draw_color(Color::RGB(0, 0, 0));
         sdl_system.canvas().clear();
 
-        //println!("VBlank occurred");
+        println!("VBlank occurred");
 
         self.status |= 0x80;
         self.vblank_occurred = true;
@@ -391,7 +403,10 @@ impl PPU {
      *
      */
     pub fn next(&mut self, cpu_cycles: usize, context: &Context, cpu: &CPU) {
+        //println!("");
         for _ in 0..(3 * cpu_cycles) {
+            //println!("Pixel, scanline: {}, {}", self.pixel, self.scanline);
+
             if let Some(addr) = self.dma_request.take() {
                 self.dma(addr, cpu, context);
             }
@@ -403,46 +418,48 @@ impl PPU {
             }
 
             match self.scanline {
-                0..=0 => {
-                    /* Pre-render scanline */
-                    // TODO: Clear sprite-0 hit at the right time
-                    self.status &= !0x40;
-                }
-                1..=240 => {
+                0..=239 => {
+                    /*if self.pixel == 0 && self.frame % 2 != 0 {
+                        self.pixel += 1;
+                    }*/
                     /* Render scanline */
                     self.for_each_pixel(context);
                 }
-                241..=241 => { /* Idle scanline */ }
-                242..=261 => {
+                240..=240 => {
+                    /* Idle scanline */
+                }
+                241..=260 => {
                     /* Vertical blanking line */
-                    // Trigger NMI
-                    if self.scanline == 242 && self.pixel == 1 {
+                    if self.scanline == 241 && self.pixel == 1 {
                         self.on_vblank_start(context);
                     }
 
-                    // This may be off by a cycle or two
-                    if self.scanline == 261 && self.pixel == 290 {
-                        self.status &= !0x80;
-                    }
                 }
-                262 => {
-
-                    /* Pre-render scanline */
-                    let last_pixel = if self.frame % 2 == 0 { 341 } else { 340 };
-
-                    if self.pixel == last_pixel {
-                        self.scanline = 0;
-                        self.pixel = 0;
-                        self.frame += 1;
+                261..=261 => {
+                    if self.pixel == 1 {
+                        self.status &= !0x80;
+                        self.status &= !0x40;
                     }
                 }
                 _ => unreachable!(),
             }
 
-            if self.pixel >= 341 {
-                self.scanline += 1;
-                self.pixel = 0;
+            let last_pixel = if self.frame % 2 != 0 && self.mask.render_background() {
+                339
             } else {
+                340
+            };
+
+            if self.pixel == last_pixel && self.scanline == 261 {
+                self.pixel = 0;
+                self.scanline = 0;
+                self.frame += 1;
+            }
+            else if self.pixel == 340 {
+                self.pixel = 0;
+                self.scanline += 1;
+            }
+            else {
                 self.pixel += 1;
             }
         }
@@ -633,17 +650,17 @@ impl PPU {
     fn sprite_at(&self, x: usize, y: usize, context: &Context) -> Option<(PalettedColor, Color, bool, usize)> {
         if y >= 1 {
             let max_height = if self.ctrl.sprite_size() { 16 } else { 8 };
-            let visible = self.oam.iter().enumerate().find(|(_, object)| {
+            self.oam.iter().enumerate().filter(|(_, object)| {
                 object.y as usize <= y - 1
                     && y - 1 < object.y as usize + max_height
                         && object.x as usize <= x && x < object.x as usize + 8
-            });
-
-            visible.map(|(index, object)| {
+            }).map(|(index, object)| {
                 let s_x = x as u8 - object.x;
                 let s_y = (y - 1) as u8 - object.y;
                 let (pal_color, color, priority) = self.get_sprite_pixel(object, s_x, s_y, context);
                 (pal_color, color, priority, index)
+            }).find(|(pal_color, _, _, _)| {
+                pal_color != &PalettedColor(0)
             })
         }
         else {
@@ -665,7 +682,7 @@ impl PPU {
         let bg_color: Option<_> = if show_bg_pixel {
             Some(self.get_background_color(
                 self.pixel + x_scroll as usize,
-                self.scanline - 1 + y_scroll as usize,
+                self.scanline + y_scroll as usize,
                 context
             ))
         } else {
@@ -680,7 +697,7 @@ impl PPU {
             && (self.mask.mask_sprites() || self.pixel >= 8);
 
         let sprite_color: Option<(PalettedColor, Color, bool, usize)> = if show_sp_pixel {
-            self.sprite_at(self.pixel, self.scanline - 1, context)
+            self.sprite_at(self.pixel, self.scanline, context)
         } else {
             None
         };
@@ -689,7 +706,7 @@ impl PPU {
         let output = if let Some(sprite_color) = sprite_color {
             // TODO: I think this should only be triggered once
             // and also check sprite-0 hit conditions properly
-            if sprite_color.3 == 0 && (bg_color.0).0 != 0 && (sprite_color.0).0 != 0 && self.pixel != 255 && self.scanline - 1 < 239 {
+            if sprite_color.3 == 0 && (bg_color.0).0 != 0 && (sprite_color.0).0 != 0 && self.pixel != 255 && self.scanline < 239 {
                 self.status |= 0x40;
             }
 
@@ -712,10 +729,10 @@ impl PPU {
     }
 
     fn set_output_pixel(&mut self, color: &Color) {
-        self.set_pixel_positioned(((self.scanline - 1) * 2) as usize, self.pixel * 2, color);
-        self.set_pixel_positioned(((self.scanline - 1) * 2) as usize, self.pixel * 2 + 1, color);
-        self.set_pixel_positioned(((self.scanline - 1) * 2) as usize + 1, self.pixel * 2, color);
-        self.set_pixel_positioned(((self.scanline - 1) * 2) as usize + 1, self.pixel * 2 + 1, color);
+        self.set_pixel_positioned((self.scanline * 2) as usize, self.pixel * 2, color);
+        self.set_pixel_positioned((self.scanline * 2) as usize, self.pixel * 2 + 1, color);
+        self.set_pixel_positioned((self.scanline * 2) as usize + 1, self.pixel * 2, color);
+        self.set_pixel_positioned((self.scanline * 2) as usize + 1, self.pixel * 2 + 1, color);
     }
 
     fn set_pixel_target(target: &mut Surface, row: usize, col: usize, color: &Color) {
@@ -742,6 +759,8 @@ impl PPU {
     }
 
     pub fn dma(&mut self, addr: u8, cpu: &CPU, context: &Context) {
+        *context.cpu_pause.borrow_mut() = if context.cycle % 2 == 1 { 513 } else { 514 };
+
         for idx in 0..64 {
             let index = ((idx * 4 + self.oam_addr as u16) % (64 * 4));
             let full_addr = (addr as u16) << 8 | index;

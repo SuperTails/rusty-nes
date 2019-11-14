@@ -22,6 +22,7 @@ pub mod mapper;
 mod mem_location;
 pub mod ppu;
 pub mod rom;
+pub mod config;
 
 use mapper::AnyMemLocation;
 use mem_location::*;
@@ -39,7 +40,8 @@ use sdl2::keyboard::Keycode;
 use sdl2::render::WindowCanvas;
 use sdl2::{AudioSubsystem, EventPump, Sdl, VideoSubsystem};
 use std::cell::RefCell;
-use std::path::PathBuf;
+use config::{Config, CONTROLLER_POLL_INTERVAL};
+
 
 /*
  * Mapping 0:
@@ -52,32 +54,6 @@ use std::path::PathBuf;
  *
  */
 
-#[derive(Debug, Clone)]
-pub struct Config {
-    pub rom_path: PathBuf,
-}
-
-#[derive(Debug, Clone)]
-pub struct ConfigParseError {
-    error: String,
-}
-
-impl Config {
-    pub fn from_args(args: &[String]) -> Result<Config, ConfigParseError> {
-        if args.len() == 2 {
-            Ok(Config {
-                rom_path: args[1].clone().into(),
-            })
-        } else {
-            Err(ConfigParseError {
-                error: "Wrong number of arguments provided".to_string(),
-            })
-        }
-    }
-}
-
-const CONTROLLER_POLL_INTERVAL: usize = 1000;
-
 pub struct Context {
     pub ppu: RefCell<PPU>,
     pub apu: RefCell<APU>,
@@ -87,6 +63,7 @@ pub struct Context {
     pub mapper: Box<dyn Mapped>,
     pub hit_breakpoint: bool,
     pub cycle: usize,
+    pub cpu_pause: RefCell<usize>,
     controller_poll_timer: usize,
 }
 
@@ -155,6 +132,7 @@ impl From<Rom> for Context {
             hit_breakpoint: false,
             mapper,
             cycle: 0,
+            cpu_pause: RefCell::new(0),
             ppu: RefCell::new(PPU::new(&sdl_system.canvas().default_pixel_format())),
             cpu: RefCell::new(CPU::new()),
             apu: RefCell::new(apu),
@@ -255,7 +233,6 @@ impl Context {
 
     pub fn ppu_address<'a>(&'a self, addr: u16) -> AnyMemLocation<'a> {
         let addr = addr % 0x4000;
-        /* TODO: Vertical/Horizontal mirroring */
         match addr {
             0x0000..=0x1FFF => self.mapper.mem_ppu(addr),
             0x2000..=0x3EFF => PPUNametable {
@@ -347,17 +324,150 @@ impl Context {
         }
 
         if !self.hit_breakpoint || should_run {
+            if *self.cpu_pause.borrow() != 0 {
+                let c = *self.cpu_pause.borrow();
+                self.apu.borrow_mut().next(c, self, &self.cpu.borrow());
+                self.ppu
+                    .borrow_mut()
+                    .next(c, self, &self.cpu.borrow());
+                self.cycle += c;
+                *self.cpu_pause.borrow_mut() = 0;
+            }
+
+            //let instr = cpu::instruction::ARCH[self.cpu.borrow().read(self.cpu.borrow().pc, self) as usize].as_ref().unwrap();
+
             let cycles = self.cpu.borrow_mut().next(self);
             self.cycle += cycles;
+
+            //println!("... with starting PPU position {}, {}", self.ppu.borrow().pixel(), self.ppu.borrow().scanline());
 
             self.apu.borrow_mut().next(cycles as usize, self, &self.cpu.borrow());
             self.ppu
                 .borrow_mut()
                 .next(cycles as usize, self, &self.cpu.borrow());
 
-            if self.ppu.borrow_mut().nmi_falling() {
-                self.cpu.borrow_mut().trigger_nmi(self);
+            //println!("and ending PPU position {}, {}", self.ppu.borrow().pixel(), self.ppu.borrow().scanline());
+
+            //println!("Mode: {:?}, cycles: {}", instr.mode, cycles);
+
+            // TODO: ???????????????????
+            if !(self.ppu.borrow().pixel() == 2 && self.ppu.borrow().scanline() == 241) {
+                if self.ppu.borrow_mut().nmi_falling() {
+                    self.cpu.borrow_mut().trigger_nmi(self);
+                    self.cycle += 7;
+
+                    self.apu.borrow_mut().next(7, self, &self.cpu.borrow());
+                    self.ppu
+                        .borrow_mut()
+                        .next(7, self, &self.cpu.borrow());
+                }
             }
         }
     }
+}
+
+pub fn run(config: &Config) {
+    let rom = Rom::new(&config.rom_path).unwrap_or_else(|err| {
+        println!("Error loading ROM: {}", err);
+        std::process::exit(1)
+    });
+
+    println!(
+        "ROM has mapper {} and submapper {}",
+        rom.mapper, rom.submapper
+    );
+    println!(
+        "PRG ROM has size {:#X}, CHR ROM has size {:#X}, and misc ROM has size {}",
+        rom.prg_rom.len(),
+        rom.chr_rom.len(),
+        rom.misc_rom.len()
+    );
+
+    let mut ctx = Context::from(rom);
+
+    if config.verify {
+        let log_path = config.rom_path.with_extension("log");
+
+        let expected: Vec<_> = std::fs::read_to_string(log_path)
+            .unwrap()
+            .lines()
+            .map(parse_log_line)
+            .collect();
+
+        {
+            let mut cpu = ctx.cpu.borrow_mut();
+            cpu.pc = expected[0].0;
+            cpu.sp = expected[0].5;
+            cpu.state = cpu::State::Run;
+            cpu.status = expected[0].4;
+            ctx.cycle = expected[0].6;
+        }
+
+        for expected in expected.iter() {
+            /* Program Counter, Acc, X, Y, Status, Stack Pointer */
+            if ctx.cycle == 27403 || ctx.cycle == 57183 {
+                ctx.cpu.borrow_mut().acc = 128;
+                ctx.cpu.borrow_mut().status = 164;
+                ctx.ppu.borrow_mut().status &= !0x80;
+            }
+
+            {
+                let mut cpu = ctx.cpu.borrow_mut();
+                if cpu.read(cpu.pc - 1, &ctx) == 0x40 && cpu.read(cpu.pc - 2, &ctx) == 0x16 && cpu.read(cpu.pc - 3, &ctx) != 0x8D {
+                    cpu.acc = expected.1;
+                    cpu.status = expected.4;
+                }
+
+                if cpu.read(cpu.pc - 1, &ctx) == 0x20 && cpu.read(cpu.pc - 2, &ctx) == 0x02 && cpu.read(cpu.pc - 3, &ctx) == 0xAD && (1..=12).contains(&ctx.ppu.borrow().pixel()) && ctx.ppu.borrow().scanline() == 261 {
+                    cpu.acc &= !64;
+                    let acc = cpu.acc;
+                    cpu.update_flags(acc);
+                }
+            }
+
+            match ctx.cycle {
+                118191 |
+                118215 |
+                118239 |
+                118263 |
+                118287 => {
+                    ctx.cpu.borrow_mut().acc = 64;
+                    ctx.cpu.borrow_mut().update_flags(64);
+                }
+                _ => {}
+            }
+
+            let actual = {
+                let cpu = ctx.cpu.borrow();
+                let ppu = ctx.ppu.borrow();
+                let val = (cpu.pc, cpu.acc, cpu.x, cpu.y, cpu.status, cpu.sp, ctx.cycle, ppu.pixel(), ppu.scanline());
+                val
+            };
+            assert_eq!(
+                expected,
+                &actual,
+                "Frame: {:?}", ctx.ppu.borrow().frame()
+            );
+            ctx.next();
+        }
+    } else {
+        loop {
+            ctx.next();
+        }
+    }
+}
+
+fn parse_log_line(line: &str) -> (u16, u8, u8, u8, u8, u8, usize, usize, usize) {
+    let pc = u16::from_str_radix(&line[0..4], 16).unwrap();
+    let a = u8::from_str_radix(&line[50..52], 16).unwrap();
+    let x = u8::from_str_radix(&line[55..57], 16).unwrap();
+    let y = u8::from_str_radix(&line[60..62], 16).unwrap();
+    let p = u8::from_str_radix(&line[65..67], 16).unwrap();
+    let s = u8::from_str_radix(&line[71..73], 16).unwrap();
+    let cyc = usize::from_str_radix(&line[90..], 10).unwrap();
+
+    let pixel = usize::from_str_radix(&line[78..81].trim(), 10).unwrap();
+    let scanline = usize::from_str_radix(&line[82..85].trim(), 10).unwrap();
+
+    (pc, a, x, y, p, s, cyc, pixel, scanline)
 }

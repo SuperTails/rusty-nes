@@ -222,10 +222,7 @@ impl APU {
         match reg {
             0x15 => self.get_status(),
             0x17 => self.get_counter_state(),
-            _ => panic!(
-                "Attempt to read invalid or write-only APU register {:#X}",
-                reg
-            ),
+            _ => { println!("Returning 0 from unknown APU register {:#X}", reg); 0 },
         }
     }
 

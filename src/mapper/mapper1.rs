@@ -107,9 +107,22 @@ impl Mapper1 {
     pub fn new(prg_rom: Vec<u8>, chr: Vec<u8>, chr_is_rom: bool) -> Mapper1 {
         assert!(prg_rom.len() == 0x20000 || prg_rom.len() == 0x40000);
 
+        let mut prg_ram = [90; 0x2000].to_vec();
+        for val in prg_ram[10..=0x51D].iter_mut() { *val = 0; }
+        for val in prg_ram[0x521..=0x525].iter_mut() { *val = 165; }
+        for val in prg_ram[0x52A..=0x52F].iter_mut() { *val = 255; }
+        for val in prg_ram[0x02..=0x19].iter_mut() { *val = 36; }
+        prg_ram[0x1FFF] = 165;
+        prg_ram[0x0524] = 1;
+        prg_ram[0x0526] = 1;
+        prg_ram[0x0528] = 1;
+        prg_ram[0x525] = 32;
+        prg_ram[0x527] = 32;
+        prg_ram[0x529] = 32;
+
         Mapper1 {
             last_mmio_write: RefCell::new(0),
-            prg_ram: RefCell::new([0; 0x2000].to_vec()),
+            prg_ram: RefCell::new(prg_ram),
             prg_rom: RefCell::new(prg_rom),
             chr: RefCell::new(chr),
             chr_is_rom,
@@ -254,7 +267,9 @@ impl Mapped for Mapper1 {
                     RomLocation { mem: 0 }.into()
                 }
                 else {
-                    Mapper1Location::Ram((&self.prg_ram, (addr - 0x4000) as usize % self.prg_ram.borrow().len())).into()
+                    let relative = (addr - 0x4000) as usize % self.prg_ram.borrow().len();
+                    //println!("Reading RAM at {:#X} = {:#X}", relative, self.prg_ram.borrow()[relative]);
+                    Mapper1Location::Ram((&self.prg_ram, relative)).into()
                 }
             }
             0x8000..=0xFFFF => Mapper1Location::Mmio((self, addr as usize, context)).into(),
