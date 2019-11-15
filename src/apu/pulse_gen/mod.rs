@@ -1,23 +1,13 @@
 use super::get_length;
 use super::envelope::Envelope;
 
-bitfield! {
-    #[derive(Clone, Copy)]
-    pub struct PulseGenCtrl2(u8);
-    impl Debug;
+pub mod sweep;
 
-    shift, set_shift: 2, 0;
-
-    negate, set_negate: 3;
-
-    period, set_period: 6, 4;
-
-    enable_sweep, set_sweep_enable: 7;
-}
+use sweep::Sweep;
 
 pub struct PulseGen {
     pub envelope: Envelope,
-    pub ctrl2: PulseGenCtrl2,
+    pub sweep: Sweep,
 
     duty: u8,
 
@@ -31,11 +21,11 @@ pub struct PulseGen {
 }
 
 impl PulseGen {
-    pub fn new() -> PulseGen {
+    pub fn new(second: bool) -> PulseGen {
         PulseGen {
             envelope: Envelope::new(),
             duty: 0,
-            ctrl2: PulseGenCtrl2(0),
+            sweep: Sweep::new(second),
             timer: 0,
             length_count: 0,
             step: 0,
@@ -49,7 +39,7 @@ impl PulseGen {
                 self.envelope.write(value & 0x3F);
                 self.duty = value >> 6;
             }
-            1 => self.ctrl2 = PulseGenCtrl2(value),
+            1 => self.sweep.write_reg(value),
             2 => {
                 self.period &= !0xFF;
                 self.period |= value as u16;
@@ -69,6 +59,8 @@ impl PulseGen {
         if self.length_count > 0 && is_half_frame {
             self.length_count -= 1;
         }
+
+        self.period = self.sweep.on_clock(is_half_frame, self.period);
 
         self.envelope.on_clock();
     }

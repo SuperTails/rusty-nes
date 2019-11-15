@@ -96,9 +96,9 @@ impl APU {
                 noise_enable: false,
                 noise: NoiseGen::new(),
                 pulse_2_enable: false,
-                pulse_2: PulseGen::new(),
+                pulse_2: PulseGen::new(true),
                 pulse_1_enable: false,
-                pulse_1: PulseGen::new(),
+                pulse_1: PulseGen::new(false),
                 triangle_enable: false,
                 triangle_gen: TriangleGen::new(),
                 audio_data: Arc::clone(&audio_data),
@@ -127,7 +127,7 @@ impl APU {
         let other_out = if tri_out == 0 && noise_out == 0 && dmc_out == 0 {
             0.0
         } else {
-            159.79 / (1.0 / (tri_out as f64 / 8227.0 + noise_out as f64 / 0.12241 + dmc_out as f64 / 22638.0) + 100.0)
+            159.79 / (1.0 / (tri_out as f64 / 8227.0 + noise_out as f64 / 12241.0 + dmc_out as f64 / 22638.0) + 100.0)
         };
 
         pulse_out + other_out
