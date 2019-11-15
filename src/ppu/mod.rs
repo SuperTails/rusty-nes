@@ -91,8 +91,11 @@ pub struct PPU {
 
     pub write_second: RefCell<bool>,
 
-    pub address: VRAMAddress,
-    pub fine_x_scroll: u8,
+    address: VRAMAddress,
+    fine_x_scroll: u8,
+
+    pub temp_address: VRAMAddress,
+    pub temp_fine_x: u8,
 
     pub nametables: Vec<Nametable>,
 
@@ -160,6 +163,8 @@ impl PPU {
             cycles: 0,
             address: VRAMAddress(0),
             fine_x_scroll: 0,
+            temp_address: VRAMAddress(0),
+            temp_fine_x: 0,
             write_second: RefCell::new(false),
             read_buffer: RefCell::new(0),
             nametables: vec![Nametable::default(), Nametable::default()],
@@ -411,6 +416,17 @@ impl PPU {
                 0..=239 => {
                     /* Render scanline */
                     self.for_each_pixel(context);
+
+                    if self.rendering_enabled() && self.pixel == 257 {
+                        self.address.set_coarse_x(self.temp_address.coarse_x());
+                        self.fine_x_scroll = self.temp_fine_x;
+
+                        // Modify only the X portion of the nametable selection
+                        let mut prev_nametable = self.address.nametable();
+                        prev_nametable &= 0b10;
+                        prev_nametable |= 0b01 & self.temp_address.nametable();
+                        self.address.set_nametable(prev_nametable);
+                    }
                 }
                 240..=240 => {
                     /* Idle scanline */
@@ -427,12 +443,27 @@ impl PPU {
                         self.status &= !0x80;
                         self.status &= !0x40;
                     }
+
+                    if self.rendering_enabled() && (280..=304).contains(&self.pixel) {
+                        self.address.set_coarse_y(self.temp_address.coarse_y());
+                        self.address.set_fine_y(self.temp_address.fine_y());
+
+                        // Modify only the Y portion of the nametable selection
+                        let mut prev_nametable = self.address.nametable();
+                        prev_nametable &= 0b01;
+                        prev_nametable |= 0b10 & self.temp_address.nametable();
+                        self.address.set_nametable(prev_nametable);
+                    }
                 }
                 _ => unreachable!(),
             }
 
             self.advance_scan();
         }
+    }
+
+    fn rendering_enabled(&self) -> bool {
+        self.mask.render_background() || self.mask.render_sprites()
     }
 
     fn advance_scan(&mut self) {
@@ -542,7 +573,7 @@ impl PPU {
     }
 
     fn selected_nametable(&self) -> usize {
-        self.ctrl.nametable_addr() as usize
+        self.address.nametable() as usize
     }
 
     fn selected_patt_table_bg(&self) -> u16 {
@@ -763,6 +794,15 @@ impl PPU {
 
     fn set_pixel_positioned(&mut self, row: usize, col: usize, color: &Color) {
         PPU::set_pixel_target(&mut self.target.borrow_mut(), row, col, color);
+    }
+
+    pub fn address(&self) -> VRAMAddress {
+        self.address
+    }
+
+    pub fn reload_address(&mut self) {
+        self.address = self.temp_address;
+        self.fine_x_scroll = self.temp_fine_x;
     }
 
     pub fn incr_address(&mut self) {

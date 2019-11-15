@@ -138,7 +138,7 @@ impl<'a> MemLocation<'a> for PPURegister<'a> {
                 self.ppu.borrow().decay
             }
             PPURegInt::Data => {
-                let addr = self.ppu.borrow().address;
+                let addr = self.ppu.borrow().address();
                 let mut ppu = self.ppu.borrow_mut();
                 let result = ppu.read_buffered(addr.0, self.context);
                 ppu.incr_address();
@@ -159,6 +159,7 @@ impl<'a> MemLocation<'a> for PPURegister<'a> {
         match self.reg {
             PPURegInt::Ctrl => {
                 self.ppu.borrow_mut().ctrl.0 = value;
+                self.ppu.borrow_mut().temp_address.set_nametable(value as u16 & 0b11);
             }
             PPURegInt::Mask => {
                 self.ppu.borrow_mut().mask.0 = value;
@@ -187,10 +188,11 @@ impl<'a> MemLocation<'a> for PPURegister<'a> {
             PPURegInt::Scroll => {
                 let mut ppu = self.ppu.borrow_mut();
                 if *ppu.write_second.borrow() {
-                    ppu.address.set_coarse_y(value as u16);
+                    ppu.temp_address.set_coarse_y((value / 8) as u16);
+                    ppu.temp_address.set_fine_y((value % 8) as u16);
                 } else {
-                    ppu.address.set_coarse_x((value / 8) as u16);
-                    ppu.fine_x_scroll = value % 8;
+                    ppu.temp_address.set_coarse_x((value / 8) as u16);
+                    ppu.temp_fine_x = value % 8;
                 }
 
                 let mut write_second = ppu.write_second.borrow_mut();
@@ -199,11 +201,12 @@ impl<'a> MemLocation<'a> for PPURegister<'a> {
             PPURegInt::Addr => {
                 let mut ppu = self.ppu.borrow_mut();
                 if *ppu.write_second.borrow() {
-                    ppu.address.0 &= 0xFF00;
-                    ppu.address.0 |= (value as u16) << 0;
+                    ppu.temp_address.0 &= 0xFF00;
+                    ppu.temp_address.0 |= (value as u16) << 0;
+                    ppu.reload_address();
                 } else {
-                    ppu.address.0 &= 0x00FF;
-                    ppu.address.0 |= (value as u16) << 8;
+                    ppu.temp_address.0 &= 0x00FF;
+                    ppu.temp_address.0 |= (0x7F & value as u16) << 8;
                 }
 
                 let mut write_second = ppu.write_second.borrow_mut();
@@ -213,7 +216,7 @@ impl<'a> MemLocation<'a> for PPURegister<'a> {
                 self.ppu.borrow_mut().dma_request = Some(value);
             }
             PPURegInt::Data => {
-                let addr = self.ppu.borrow().address;
+                let addr = self.ppu.borrow().address();
                 let mut ppu = self.ppu.borrow_mut();
                 ppu.write(addr.0, value, self.context);
                 ppu.incr_address();
