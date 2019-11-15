@@ -118,6 +118,7 @@ impl<'a> MemLocation<'a> for PPURegister<'a> {
             PPURegInt::Mask => self.ppu.borrow().decay,
             PPURegInt::Status => {
                 let mut ppu = self.ppu.borrow_mut();
+                *ppu.write_second.borrow_mut() = false;
                 let decay = ppu.decay & 0b00011111;
                 let new_status = ppu.status & !0x80;
                 std::mem::replace(&mut ppu.status, new_status) | decay
@@ -139,7 +140,7 @@ impl<'a> MemLocation<'a> for PPURegister<'a> {
             PPURegInt::Data => {
                 let addr = self.ppu.borrow().address;
                 let mut ppu = self.ppu.borrow_mut();
-                let result = ppu.read_buffered(addr, self.context);
+                let result = ppu.read_buffered(addr.0, self.context);
                 ppu.incr_address();
                 result
             }
@@ -176,7 +177,7 @@ impl<'a> MemLocation<'a> for PPURegister<'a> {
                 match byte {
                     0 => entry.y = value,
                     1 => entry.index = value,
-                    2 => entry.attrs = crate::ppu::OAMEntryAttrs(value),
+                    2 => entry.attrs = crate::ppu::oam::OAMEntryAttrs(value),
                     3 => entry.x = value,
                     _ => unreachable!(),
                 };
@@ -185,13 +186,28 @@ impl<'a> MemLocation<'a> for PPURegister<'a> {
             }
             PPURegInt::Scroll => {
                 let mut ppu = self.ppu.borrow_mut();
-                ppu.scroll <<= 8;
-                ppu.scroll |= value as u16;
+                if *ppu.write_second.borrow() {
+                    ppu.address.set_coarse_y(value as u16);
+                } else {
+                    ppu.address.set_coarse_x((value / 8) as u16);
+                    ppu.fine_x_scroll = value % 8;
+                }
+
+                let mut write_second = ppu.write_second.borrow_mut();
+                *write_second = !*write_second;
             }
             PPURegInt::Addr => {
                 let mut ppu = self.ppu.borrow_mut();
-                ppu.address <<= 8;
-                ppu.address |= value as u16;
+                if *ppu.write_second.borrow() {
+                    ppu.address.0 &= 0xFF00;
+                    ppu.address.0 |= (value as u16) << 0;
+                } else {
+                    ppu.address.0 &= 0x00FF;
+                    ppu.address.0 |= (value as u16) << 8;
+                }
+
+                let mut write_second = ppu.write_second.borrow_mut();
+                *write_second = !*write_second;
             }
             PPURegInt::Dma => {
                 self.ppu.borrow_mut().dma_request = Some(value);
@@ -199,7 +215,7 @@ impl<'a> MemLocation<'a> for PPURegister<'a> {
             PPURegInt::Data => {
                 let addr = self.ppu.borrow().address;
                 let mut ppu = self.ppu.borrow_mut();
-                ppu.write(addr, value, self.context);
+                ppu.write(addr.0, value, self.context);
                 ppu.incr_address();
             }
         }

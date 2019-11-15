@@ -7,10 +7,13 @@ use sdl2::surface::Surface;
 use std::cell::RefCell;
 use std::time::Instant;
 use arrayvec::ArrayVec;
+use oam::{OAMEntry, OAMEntryAttrs};
+use vram_address::VRAMAddress;
+use nametable::{Nametable, NAMETABLE_SIZE};
 
 pub mod nametable;
-
-use nametable::{Nametable, NAMETABLE_SIZE};
+pub mod oam;
+pub mod vram_address;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct PalettedColor(pub u8);
@@ -19,39 +22,6 @@ struct PalettedColor(pub u8);
 struct NTSCColor(pub u8);
 
 const DEBUG_RENDER: bool = true;
-
-bitfield! {
-    #[derive(Clone, Copy)]
-    pub struct OAMEntryAttrs(u8);
-    impl Debug;
-
-    palette_idx, set_palette_idx: 1, 0;
-
-    priority, set_priority: 5;
-
-    horiz_flip, set_horiz_flip: 6;
-
-    vert_flip, set_vert_flip: 7;
-}
-
-#[derive(Clone, Copy, Debug)]
-pub struct OAMEntry {
-    pub y: u8,
-    pub index: u8,
-    pub attrs: OAMEntryAttrs,
-    pub x: u8,
-}
-
-impl Default for OAMEntry {
-    fn default() -> OAMEntry {
-        OAMEntry {
-            y: 0,
-            index: 0,
-            attrs: OAMEntryAttrs(0),
-            x: 0,
-        }
-    }
-}
 
 bitfield! {
     pub struct PPUCtrl(u8);
@@ -118,8 +88,11 @@ pub struct PPU {
     pub status: u8,
 
     pub cycles: u128,
-    pub address: u16,
-    pub scroll: u16,
+
+    pub write_second: RefCell<bool>,
+
+    pub address: VRAMAddress,
+    pub fine_x_scroll: u8,
 
     pub nametables: Vec<Nametable>,
 
@@ -160,12 +133,12 @@ impl PPU {
         Surface::new(TARGET_SURFACE_WIDTH as u32, 480, *pixel_format).unwrap()
     }
 
-    fn y_scroll(&self) -> u16 {
-        self.scroll & 0xFF
+    fn y_scroll(&self) -> u8 {
+        (self.address.coarse_y() * 8 + self.address.fine_y()) as u8
     }
 
-    fn x_scroll(&self) -> u16 {
-        self.scroll >> 8
+    fn x_scroll(&self) -> u8 {
+        self.address.coarse_x() as u8 * 8 + self.fine_x_scroll
     }
 
     pub fn new(pixel_format: &PixelFormatEnum) -> PPU {
@@ -185,8 +158,9 @@ impl PPU {
             status: 0,
             vblank_occurred: false,
             cycles: 0,
-            address: 0,
-            scroll: 0,
+            address: VRAMAddress(0),
+            fine_x_scroll: 0,
+            write_second: RefCell::new(false),
             read_buffer: RefCell::new(0),
             nametables: vec![Nametable::default(), Nametable::default()],
             palette_idxs: [
@@ -422,10 +396,7 @@ impl PPU {
      *
      */
     pub fn next(&mut self, cpu_cycles: usize, context: &Context, cpu: &CPU) {
-        //println!("");
         for _ in 0..(3 * cpu_cycles) {
-            //println!("Pixel, scanline: {}, {}", self.pixel, self.scanline);
-
             if let Some(addr) = self.dma_request.take() {
                 self.dma(addr, cpu, context);
             }
@@ -438,9 +409,6 @@ impl PPU {
 
             match self.scanline {
                 0..=239 => {
-                    /*if self.pixel == 0 && self.frame % 2 != 0 {
-                        self.pixel += 1;
-                    }*/
                     /* Render scanline */
                     self.for_each_pixel(context);
                 }
@@ -463,24 +431,28 @@ impl PPU {
                 _ => unreachable!(),
             }
 
-            let last_pixel = if self.frame % 2 != 0 && self.mask.render_background() {
-                339
-            } else {
-                340
-            };
+            self.advance_scan();
+        }
+    }
 
-            if self.pixel == last_pixel && self.scanline == 261 {
-                self.pixel = 0;
-                self.scanline = 0;
-                self.frame += 1;
-            }
-            else if self.pixel == 340 {
-                self.pixel = 0;
-                self.scanline += 1;
-            }
-            else {
-                self.pixel += 1;
-            }
+    fn advance_scan(&mut self) {
+        let last_pixel = if self.frame % 2 != 0 && self.mask.render_background() {
+            339
+        } else {
+            340
+        };
+
+        if self.pixel == last_pixel && self.scanline == 261 {
+            self.pixel = 0;
+            self.scanline = 0;
+            self.frame += 1;
+        }
+        else if self.pixel == 340 {
+            self.pixel = 0;
+            self.scanline += 1;
+        }
+        else {
+            self.pixel += 1;
         }
     }
 
@@ -795,9 +767,9 @@ impl PPU {
 
     pub fn incr_address(&mut self) {
         if self.ctrl.increment_mode() {
-            self.address += 32;
+            self.address.0 += 32;
         } else {
-            self.address += 1;
+            self.address.0 += 1;
         }
     }
 
