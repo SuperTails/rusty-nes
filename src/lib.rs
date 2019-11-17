@@ -19,13 +19,15 @@ pub mod apu;
 pub mod controller;
 pub mod cpu;
 pub mod mapper;
-mod mem_location;
 pub mod ppu;
 pub mod rom;
 pub mod config;
+mod mem_location;
+mod sdl_system;
 
 use mapper::AnyMemLocation;
 use mem_location::*;
+use sdl_system::SDLSystem;
 
 use apu::{APUAudio, APU};
 use controller::Controller;
@@ -34,15 +36,12 @@ use mapper::{Mapped, Mapper0, Mapper1, Mapper3, Mapper4};
 use num_traits::cast::FromPrimitive;
 use ppu::PPU;
 use rom::Rom;
-use sdl2::audio::{AudioDevice, AudioSpecDesired};
-use sdl2::event::Event;
-use sdl2::keyboard::Keycode;
-use sdl2::render::WindowCanvas;
-use sdl2::{AudioSubsystem, EventPump, Sdl, VideoSubsystem};
 use std::cell::RefCell;
 use std::io::{Read, Write};
 use config::{Config, CONTROLLER_POLL_INTERVAL};
-
+use sdl2::event::Event;
+use sdl2::keyboard::Keycode;
+use sdl2::audio::AudioSpecDesired;
 
 /*
  * Mapping 0:
@@ -66,46 +65,6 @@ pub struct Context {
     pub cycle: usize,
     pub cpu_pause: RefCell<usize>,
     controller_poll_timer: usize,
-}
-
-pub struct SDLSystem {
-    pub ctx: Sdl,
-    pub video_subsystem: VideoSubsystem,
-    pub audio_subsystem: AudioSubsystem,
-    pub audio_device: Option<AudioDevice<APUAudio>>,
-    pub canvas: WindowCanvas,
-    pub event_pump: EventPump,
-}
-
-impl SDLSystem {
-    pub fn new() -> SDLSystem {
-        let ctx = sdl2::init().unwrap();
-        let video_subsystem = ctx.video().unwrap();
-        let audio_subsystem = ctx.audio().unwrap();
-        let window = video_subsystem
-            .window("Terrible NES", 1024 + 256, 480)
-            .position_centered()
-            .build()
-            .unwrap();
-        let canvas = window.into_canvas().build().unwrap();
-        let event_pump = ctx.event_pump().unwrap();
-        SDLSystem {
-            ctx,
-            video_subsystem,
-            audio_subsystem,
-            canvas,
-            event_pump,
-            audio_device: None,
-        }
-    }
-
-    pub fn present(&mut self) {
-        self.canvas.present();
-    }
-
-    pub fn canvas(&mut self) -> &mut WindowCanvas {
-        &mut self.canvas
-    }
 }
 
 impl Context {
