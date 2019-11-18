@@ -78,6 +78,8 @@ impl DMC {
                 }
             }
 
+            self.sample_bit += 1;
+
             if self.sample_bit == 8 {
                 self.sample_bit = 0;
 
@@ -92,9 +94,6 @@ impl DMC {
                 else {
                     self.sample_address += 1;
                 }
-            }
-            else {
-                self.sample_bit += 1;
             }
         }
     }

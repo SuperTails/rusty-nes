@@ -10,10 +10,12 @@ use arrayvec::ArrayVec;
 use oam::{OAMEntry, OAMEntryAttrs};
 use vram_address::VRAMAddress;
 use nametable::{Nametable, NAMETABLE_SIZE};
+use sprite_eval::Evaluator;
 
 pub mod nametable;
 pub mod oam;
 pub mod vram_address;
+mod sprite_eval;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct PalettedColor(pub u8);
@@ -112,6 +114,8 @@ pub struct PPU {
 
     pub sprite_0_hit: Option<(usize, usize)>,
 
+    evaluator: Evaluator,
+
     frame: usize,
 
     read_buffer: RefCell<u8>,
@@ -156,6 +160,7 @@ impl PPU {
             scanline: 0,
             pixel: 0,
             last_value: 0,
+            evaluator: Evaluator::new(),
             last_frames: [Instant::now(); 10].to_vec(),
             target: RefCell::new(PPU::make_target(pixel_format)),
             status: 0,
@@ -412,6 +417,9 @@ impl PPU {
                 }
             }
 
+            let height = if self.ctrl.sprite_size() { 16 } else { 8 };
+            self.evaluator.next(self.pixel, self.scanline, &self.oam, height);
+
             match self.scanline {
                 0..=239 => {
                     /* Render scanline */
@@ -488,6 +496,7 @@ impl PPU {
     }
 
     fn render_oam(&mut self, context: &Context) {
+        let mut target = self.target.borrow_mut();
         let height = if self.ctrl.sprite_size() { 16 } else { 8 };
         for row in 0..8 {
             for y in 0..height {
@@ -500,7 +509,7 @@ impl PPU {
                         let p_x = x + col * 8 + 512;
                         let p_y = y + row * height + 256;
 
-                        PPU::set_pixel_target(&mut self.target.borrow_mut(), p_y as usize, p_x as usize, &color);
+                        PPU::set_pixel_target(&mut target, p_y as usize, p_x as usize, &color);
                     }
                 }
             }
@@ -696,16 +705,30 @@ impl PPU {
         self.sprite_color_from_row(object, hi_color, lo_color, s_x)
     }
 
-    fn sprite_at(&self, x: usize, y: usize, context: &Context) -> Option<(PalettedColor, Color, bool, usize)> {
-        if y >= 1 {
+    fn sprite_at(&self, x: u8, context: &Context) -> Option<(PalettedColor, Color, bool, usize)> {
+        self.evaluator.next_sprites.iter().filter(|(_, object)| {
+            object.x <= x && x < object.x + 8
+        }).map(|(index, object)| {
+            //println!("Object x,y: {}, {}; Pixel, scanline: {}, {}", object.x, object.y, self.pixel, self.scanline);
+            let s_x = x - object.x;
+            let s_y = (self.scanline - 1) as u8 - object.y;
+            let (pal_color, color, priority) = self.get_sprite_pixel(object, s_x, s_y, context);
+            (pal_color, color, priority, *index)
+        }).find(|(pal_color, _, _, _)| {
+            pal_color != &PalettedColor(0)
+        })
+    }
+
+    /*fn sprite_at(&self, x: u8, y: u8, context: &Context) -> Option<(PalettedColor, Color, bool, usize)> {
+        if 1 <= y {
+            let y = y - 1;
             let max_height = if self.ctrl.sprite_size() { 16 } else { 8 };
             self.oam.iter().enumerate().filter(|(_, object)| {
-                object.y as usize <= y - 1
-                    && y - 1 < object.y as usize + max_height
-                        && object.x as usize <= x && x < object.x as usize + 8
+                object.x <= x && x < object.x + 8
+                    && object.y <= y && y < object.y + max_height
             }).map(|(index, object)| {
-                let s_x = x as u8 - object.x;
-                let s_y = (y - 1) as u8 - object.y;
+                let s_x = x - object.x;
+                let s_y = y - object.y;
                 let (pal_color, color, priority) = self.get_sprite_pixel(object, s_x, s_y, context);
                 (pal_color, color, priority, index)
             }).find(|(pal_color, _, _, _)| {
@@ -715,10 +738,10 @@ impl PPU {
         else {
             None
         }
-    }
+    }*/
 
     fn for_each_pixel(&mut self, context: &Context) {
-        if self.pixel as usize >= 256 {
+        if self.pixel >= 256 {
             return;
         }
 
@@ -743,7 +766,7 @@ impl PPU {
             && (self.mask.mask_sprites() || self.pixel >= 8);
 
         let sprite_color: Option<(PalettedColor, Color, bool, usize)> = if show_sp_pixel {
-            self.sprite_at(self.pixel, self.scanline, context)
+            self.sprite_at(self.pixel as u8, context)
         } else {
             None
         };

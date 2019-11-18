@@ -24,6 +24,7 @@ fn get_length(idx: u8) -> u8 {
     ];
     lengths[idx as usize]
 }
+
 pub struct APU {
     step_mode: bool,
     irq_inhibit: bool,
@@ -143,9 +144,7 @@ impl APU {
                 self.cycle %= 14915 * 2;
             }
 
-            if self.triangle_enable {
-                self.triangle_gen.on_cpu_cycle();
-            }
+            self.triangle_gen.on_cpu_cycle();
 
             if self.step_mode {
                 // 5-Step sequence
@@ -156,9 +155,9 @@ impl APU {
                 {
                     let is_half_frame = self.cycle == 7456 * 2 + 1 || self.cycle == 18640 * 2 + 1;
                     self.triangle_gen.on_clock(is_half_frame);
-                        self.pulse_1.on_clock(is_half_frame);
-                        self.pulse_2.on_clock(is_half_frame);
-                        self.noise.on_clock(is_half_frame);
+                    self.pulse_1.on_clock(is_half_frame);
+                    self.pulse_2.on_clock(is_half_frame);
+                    self.noise.on_clock(is_half_frame);
                 }
             } else {
                 // 4-Step sequence
@@ -177,25 +176,11 @@ impl APU {
 
             // TODO: One cpu cycle delay
             if self.cycle % 2 == 0 {
-                if self.triangle_enable {
-                    self.triangle_gen.on_apu_cycle();
-                }
-
-                if self.pulse_1_enable {
-                    self.pulse_1.on_apu_cycle();
-                }
-
-                if self.pulse_2_enable {
-                    self.pulse_2.on_apu_cycle();
-                }
-
-                if self.noise_enable {
-                    self.noise.on_apu_cycle();
-                }
-
-                if self.dmc_enable {
-                    self.dmc.on_apu_cycle(cpu, context);
-                }
+                self.triangle_gen.on_apu_cycle();
+                self.pulse_1.on_apu_cycle();
+                self.pulse_2.on_apu_cycle();
+                self.noise.on_apu_cycle();
+                self.dmc.on_apu_cycle(cpu, context);
             }
 
             if self.cycle % (56 * 2) == 0 {
@@ -239,9 +224,13 @@ impl APU {
             }
             0x15 => {
                 self.pulse_1_enable = value & (1 << 0) != 0;
+                if !self.pulse_1_enable { self.pulse_1.on_disable(); }
                 self.pulse_2_enable = value & (1 << 1) != 0;
+                if !self.pulse_2_enable { self.pulse_2.on_disable(); }
                 self.triangle_enable = value & (1 << 2) != 0;
+                if !self.triangle_enable { self.triangle_gen.on_disable(); }
                 self.noise_enable = value & (1 << 3) != 0;
+                if !self.noise_enable { self.noise.on_disable(); }
                 self.dmc_enable = value & (1 << 4) != 0;
             }
             0x17 => {

@@ -55,6 +55,10 @@ impl PulseGen {
         }
     }
 
+    pub fn on_disable(&mut self) {
+        self.length_count = 0;
+    }
+
     pub fn on_clock(&mut self, is_half_frame: bool) {
         if self.length_count > 0 && is_half_frame {
             self.length_count -= 1;

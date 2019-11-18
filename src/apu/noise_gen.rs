@@ -28,8 +28,8 @@ impl NoiseGen {
 
     fn next_shift(mut reg: u16, mode: bool) -> u16 {
         let feedback = {
-            let feedback_rhs = (if mode { reg >> 6 } else { reg >> 1 }) & 1;
-            (reg & 1) ^ feedback_rhs
+            let feedback_rhs = if mode { reg >> 6 } else { reg >> 1 };
+            (reg & 1) ^ (feedback_rhs & 1)
         };
 
         reg >>= 1;
@@ -46,6 +46,10 @@ impl NoiseGen {
         } else {
             0
         }
+    }
+
+    pub fn on_disable(&mut self) {
+        self.length_count = 0;
     }
 
     pub fn on_clock(&mut self, is_half_frame: bool) {
@@ -76,7 +80,7 @@ impl NoiseGen {
             }
             0xF => {
                 self.length_count = value >> 3;
-                self.ctrl.start();       
+                self.ctrl.start();
             }
             _ => panic!(),
         }

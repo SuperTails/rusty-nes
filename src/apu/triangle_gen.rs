@@ -23,6 +23,10 @@ impl TriangleGen {
         }
     }
 
+    pub fn on_disable(&mut self) {
+        self.length_count = 0;
+    }
+
     pub fn output(&self) -> u8 {
         assert!(self.step < 32);
 
