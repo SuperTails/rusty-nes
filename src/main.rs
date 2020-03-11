@@ -10,5 +10,5 @@ fn main() {
         std::process::exit(1)
     });
 
-    nes::run(&config);
+    nes::run(&config).unwrap();
 }

@@ -83,7 +83,7 @@ macro_rules! mem_loc_dispatch {
             fn write(&'a mut self, value: u8) {
                 match self {
                     $(
-                        Self::$varname(v) => v.write(value),  
+                        Self::$varname(v) => v.write(value),
                     )*
                 }
             }
