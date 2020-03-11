@@ -81,7 +81,7 @@ impl TriangleGen {
     pub fn write_reg(&mut self, reg: usize, value: u8) {
         match reg {
             0x8 => self.write_reg_8(value),
-            0x9 => {},
+            0x9 => {}
             0xA => self.write_reg_a(value),
             0xB => self.write_reg_b(value),
             _ => panic!(),

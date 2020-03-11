@@ -1,7 +1,9 @@
 use crate::cpu::CPU;
 use crate::Context;
 
-const RATES: [usize; 0x10] = [428, 380, 340, 320, 286, 254, 226, 214, 190, 160, 142, 128, 106,  84,  72,  54];
+const RATES: [usize; 0x10] = [
+    428, 380, 340, 320, 286, 254, 226, 214, 190, 160, 142, 128, 106, 84, 72, 54,
+];
 
 bitfield! {
     #[derive(Clone, Copy)]
@@ -59,8 +61,7 @@ impl DMC {
 
         if self.timer > 0 {
             self.timer -= 1;
-        }
-        else {
+        } else {
             self.timer = period;
 
             let value = cpu.read(self.sample_address, context);
@@ -71,11 +72,8 @@ impl DMC {
                 if self.level <= 125 {
                     self.level += 2;
                 }
-            }
-            else {
-                if self.level >= 2 {
-                    self.level -= 2;
-                }
+            } else if self.level >= 2 {
+                self.level -= 2;
             }
 
             self.sample_bit += 1;
@@ -86,12 +84,10 @@ impl DMC {
                 if self.sample_address == 0xFFFF {
                     if self.ctrl.do_loop() {
                         self.sample_address = 0x8000;
-                    }
-                    else {
+                    } else {
                         // TODO: IRQ
                     }
-                }
-                else {
+                } else {
                     self.sample_address += 1;
                 }
             }

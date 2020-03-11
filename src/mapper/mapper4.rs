@@ -1,7 +1,7 @@
-use std::cell::RefCell;
-use crate::Context;
-use crate::mem_location::{MemLocation, RamLocation, RomLocation};
 use super::{Mapped, MapperResult, MirrorMode};
+use crate::mem_location::{MemLocation, RamLocation, RomLocation};
+use crate::Context;
+use std::cell::RefCell;
 
 /* From the nesdev wiki (https://wiki.nesdev.com/w/index.php/MMC3):
  *
@@ -10,7 +10,7 @@ use super::{Mapped, MapperResult, MirrorMode};
  * CPU $A000-$BFFF: 8 KB switchable PRG ROM bank
  * CPU $C000-$DFFF (or $8000-$9FFF): 8 KB PRG ROM bank, fixed to the second-last bank
  * CPU $E000-$FFFF: 8 KB PRG ROM bank, fixed to the last bank
- * 
+ *
  * PPU $0000-$07FF (or $1000-$17FF): 2 KB switchable CHR bank
  * PPU $0800-$0FFF (or $1800-$1FFF): 2 KB switchable CHR bank
  * PPU $1000-$13FF (or $0000-$03FF): 1 KB switchable CHR bank
@@ -25,21 +25,22 @@ use super::{Mapped, MapperResult, MirrorMode};
 // TODO: IRQ
 pub struct Mapper4 {
     prg_ram: RefCell<Vec<u8>>, // Optional
-    prg_rom: Vec<u8>,      // 16KiB or 32KiB, not bankswitched
-    chr: RefCell<Vec<u8>>, // Up to 2048KiB, bank size 8KiB
-    
+    prg_rom: Vec<u8>,          // 16KiB or 32KiB, not bankswitched
+    chr: RefCell<Vec<u8>>,     // Up to 2048KiB, bank size 8KiB
+
     data: RefCell<Mapper4Data>,
 }
 
+#[derive(Default)]
 pub struct Mapper4Data {
     next_destination: u8,
     prg_rom_mode: bool,
     chr_inversion: bool,
 
-    doublesize_chr_banks: [u8; 2],  // R0, R1
-    normalsize_chr_banks: [u8; 4],  // R2, R3, R4, R5
-    switched_prg_bank: u8,          // R6
-    middle_prg_bank: u8,            // R7
+    doublesize_chr_banks: [u8; 2], // R0, R1
+    normalsize_chr_banks: [u8; 4], // R2, R3, R4, R5
+    switched_prg_bank: u8,         // R6
+    middle_prg_bank: u8,           // R7
 
     deny_writes: bool,
     enable_ram: bool,
@@ -53,24 +54,10 @@ pub struct Mapper4Data {
 
 impl Mapper4Data {
     pub fn new() -> Mapper4Data {
-        Mapper4Data {
-            next_destination: 0,
-            prg_rom_mode: false,
-            chr_inversion: false,
-            doublesize_chr_banks: [0; 2],
-            normalsize_chr_banks: [0; 4],
-            switched_prg_bank: 0,
-            middle_prg_bank: 0,
-            deny_writes: false,
-            enable_ram: false,
-            horizontal_mirroring: false,
-            irq_counter_reload: 0,
-            irq_counter: 0,
-            irq_enable: false,
-        }
+        Mapper4Data::default()
     }
 
-	pub fn write_register(&mut self, addr: u16, value: u8) {
+    pub fn write_register(&mut self, addr: u16, value: u8) {
         let register_pair = (addr >> 13) & 0b11;
         let is_right = addr & 1 != 0;
 
@@ -87,7 +74,9 @@ impl Mapper4Data {
             }
             (0, true) => {
                 match self.next_destination {
-                    0..=1 => self.doublesize_chr_banks[self.next_destination as usize] = value & !0x1, // Ignore the bottom bit for doublesize
+                    0..=1 => {
+                        self.doublesize_chr_banks[self.next_destination as usize] = value & !0x1
+                    } // Ignore the bottom bit for doublesize
                     2..=5 => self.normalsize_chr_banks[self.next_destination as usize - 2] = value,
                     6..=6 => self.switched_prg_bank = value & 0x3F, // Ignore the top two bits for both PRG banks
                     7..=7 => self.middle_prg_bank = value & 0x3F,
@@ -95,7 +84,7 @@ impl Mapper4Data {
                 }
 
                 /*if self.next_destination <= 5 {
-                    println!("Writing {:#X} to CHR register {}", 
+                    println!("Writing {:#X} to CHR register {}",
                         value,
                         self.next_destination
                     );
@@ -138,7 +127,7 @@ impl Mapper4Data {
             }
             _ => unreachable!(),
         }
-	}
+    }
 
     pub fn cpu_bank(&self, addr: u16) -> i8 {
         if self.prg_rom_mode {
@@ -163,15 +152,26 @@ impl Mapper4Data {
     pub fn ppu_bank_register(&self, addr: u16) -> (u8, bool) {
         if self.chr_inversion {
             match addr {
-                0x0000..=0x0FFF => (self.normalsize_chr_banks[(addr - 0x0000) as usize / 0x400], false),
-                0x1000..=0x1FFF => (self.doublesize_chr_banks[(addr - 0x1000) as usize / 0x800], true),
+                0x0000..=0x0FFF => (
+                    self.normalsize_chr_banks[(addr - 0x0000) as usize / 0x400],
+                    false,
+                ),
+                0x1000..=0x1FFF => (
+                    self.doublesize_chr_banks[(addr - 0x1000) as usize / 0x800],
+                    true,
+                ),
                 _ => panic!(),
             }
-        }
-        else {
+        } else {
             match addr {
-                0x0000..=0x0FFF => (self.doublesize_chr_banks[(addr - 0x0000) as usize / 0x800], true),
-                0x1000..=0x1FFF => (self.normalsize_chr_banks[(addr - 0x1000) as usize / 0x400], false),
+                0x0000..=0x0FFF => (
+                    self.doublesize_chr_banks[(addr - 0x0000) as usize / 0x800],
+                    true,
+                ),
+                0x1000..=0x1FFF => (
+                    self.normalsize_chr_banks[(addr - 0x1000) as usize / 0x400],
+                    false,
+                ),
                 _ => panic!(),
             }
         }
@@ -180,16 +180,13 @@ impl Mapper4Data {
 
 impl Mapper4 {
     pub fn new(prg_rom: Vec<u8>, chr: Vec<u8>, prg_ram_len: usize) -> Mapper4 {
-        assert!(chr.len() <= 0x200000);
+        assert!(chr.len() <= 0x20_0000);
         assert_eq!(chr.len() % 0x2000, 0);
-
-        let mut prg_ram = Vec::with_capacity(prg_ram_len);
-        prg_ram.resize(prg_ram_len, 0);
 
         Mapper4 {
             prg_rom,
             chr: RefCell::new(chr),
-            prg_ram: RefCell::new(prg_ram),
+            prg_ram: RefCell::new(vec![0; prg_ram_len]),
             data: RefCell::new(Mapper4Data::new()),
         }
     }
@@ -225,11 +222,18 @@ impl Mapped for Mapper4 {
         match addr {
             0x4020..=0x7FFF => {
                 if self.data.borrow().deny_writes {
-                    RomLocation { mem: self.prg_ram.borrow()[addr as usize % 0x2000] }.into()
+                    RomLocation {
+                        mem: self.prg_ram.borrow()[addr as usize % 0x2000],
+                    }
+                    .into()
                 } else {
-                    RamLocation { mem: &self.prg_ram, addr: (addr % 0x2000) }.into()
+                    RamLocation {
+                        mem: &self.prg_ram,
+                        addr: (addr % 0x2000),
+                    }
+                    .into()
                 }
-            },
+            }
             0x8000..=0xFFFF => Mapper4Location::CPU({
                 let relative = (addr % 0x2000) as usize;
                 let bank_select = {
@@ -245,18 +249,20 @@ impl Mapped for Mapper4 {
                 };
                 let bank = &self.prg_rom[(bank_select * 0x2000)..((bank_select + 1) * 0x2000)];
                 (&self.data, addr, bank[relative])
-            }).into(),
+            })
+            .into(),
             _ => panic!(),
         }
     }
 
-    fn mem_ppu<'a>(&'a self, mut addr: u16) -> MapperResult<'a> {
+    fn mem_ppu(&self, mut addr: u16) -> MapperResult {
         match addr {
             0x0000..=0x1FFF => {
                 let (reg, double) = self.data.borrow().ppu_bank_register(addr);
                 addr &= if double { 0x7FF } else { 0x3FF };
 
-                let mapped_addr = (reg as usize * 0x400 + addr as usize) & (self.chr.borrow().len() - 1);
+                let mapped_addr =
+                    (reg as usize * 0x400 + addr as usize) & (self.chr.borrow().len() - 1);
                 Mapper4Location::PPU((&self.chr, mapped_addr)).into()
             }
             _ => panic!(),
@@ -266,8 +272,7 @@ impl Mapped for Mapper4 {
     fn mirror_mode(&self) -> MirrorMode {
         if self.data.borrow().horizontal_mirroring {
             MirrorMode::Horizontal
-        }
-        else {
+        } else {
             MirrorMode::Vertical
         }
     }

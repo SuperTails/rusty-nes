@@ -49,20 +49,15 @@ impl Envelope {
             self.decay_level = 15;
             self.timer = self.period;
             self.start = false;
-        }
-        else {
-            if self.timer == 0 {
-                self.timer = self.period;
-                if self.decay_level > 0 {
-                    self.decay_level -= 1;
-                }
-                else if self.do_loop {
-                    self.decay_level = 15;
-                }
+        } else if self.timer == 0 {
+            self.timer = self.period;
+            if self.decay_level > 0 {
+                self.decay_level -= 1;
+            } else if self.do_loop {
+                self.decay_level = 15;
             }
-            else {
-                self.timer -= 1;
-            }
+        } else {
+            self.timer -= 1;
         }
     }
 }

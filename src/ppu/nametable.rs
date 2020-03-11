@@ -26,11 +26,9 @@ impl Nametable {
             let row = i / 32;
             let col = i % 32;
             NametableEntry::PatternIndex(self.data[row][col])
-        }
-        else if i < 0x400 {
+        } else if i < 0x400 {
             NametableEntry::PatternAttribute(self.attribute_table[i - 0x3C0])
-        }
-        else {
+        } else {
             panic!("Index {:#X} out of range for nametable", i);
         }
     }
@@ -47,14 +45,11 @@ impl Nametable {
             let row = i / 32;
             let col = i % 32;
             &mut self.data[row][col]
-        }
-        else if i < 0x400 {
+        } else if i < 0x400 {
             &mut self.attribute_table[i - 0x3C0]
-        }
-        else {
+        } else {
             panic!("Index {:#X} out of range for nametable", i);
         }
-       
     }
 
     pub fn write(&mut self, i: usize, value: u8) {

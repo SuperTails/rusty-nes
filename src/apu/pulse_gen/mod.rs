@@ -1,5 +1,5 @@
-use super::get_length;
 use super::envelope::Envelope;
+use super::get_length;
 
 pub mod sweep;
 

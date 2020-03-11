@@ -1,7 +1,7 @@
+use crate::APUAudio;
 use sdl2::audio::AudioDevice;
 use sdl2::render::WindowCanvas;
 use sdl2::{AudioSubsystem, EventPump, Sdl, VideoSubsystem};
-use crate::APUAudio;
 
 pub struct SDLSystem {
     pub ctx: Sdl,
@@ -43,4 +43,8 @@ impl SDLSystem {
     }
 }
 
-
+impl Default for SDLSystem {
+    fn default() -> SDLSystem {
+        SDLSystem::new()
+    }
+}

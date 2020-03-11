@@ -1,7 +1,7 @@
-use std::cell::RefCell;
-use crate::Context;
-use crate::mem_location::MemLocation;
 use super::{Mapped, MapperResult, MirrorMode};
+use crate::mem_location::MemLocation;
+use crate::Context;
+use std::cell::RefCell;
 
 pub struct Mapper3 {
     prg_rom: Vec<u8>,      // 16KiB or 32KiB, not bankswitched
@@ -11,7 +11,7 @@ pub struct Mapper3 {
 
 impl Mapper3 {
     pub fn new(prg_rom: Vec<u8>, chr: Vec<u8>) -> Mapper3 {
-        assert!(chr.len() <= 0x200000);
+        assert!(chr.len() <= 0x20_0000);
         assert_eq!(chr.len() % 0x2000, 0);
         assert!(prg_rom.len() == 0x4000 || prg_rom.len() == 0x8000);
 

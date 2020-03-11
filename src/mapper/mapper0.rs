@@ -1,7 +1,7 @@
-use std::cell::RefCell;
-use crate::Context;
-use crate::mem_location::{RomLocation, RamLocation, MemLocation};
 use super::{Mapped, MapperResult, MirrorMode};
+use crate::mem_location::{MemLocation, RamLocation, RomLocation};
+use crate::Context;
+use std::cell::RefCell;
 
 /*
  * MAPPER 0
@@ -62,7 +62,7 @@ impl Mapped for Mapper0 {
         }
     }
 
-    fn mem_ppu<'a>(&'a self, addr: u16) -> MapperResult<'a> {
+    fn mem_ppu(&self, addr: u16) -> MapperResult {
         match addr {
             0x0000..=0x1FFF => RamLocation {
                 addr,
@@ -78,5 +78,3 @@ impl Mapped for Mapper0 {
         MirrorMode::Vertical
     }
 }
-
-

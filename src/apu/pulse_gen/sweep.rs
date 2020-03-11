@@ -47,22 +47,13 @@ impl Sweep {
                 self.timer -= 1;
                 timer_period
             }
-        }
-        else {
+        } else {
             timer_period
         }
     }
 
     pub fn is_muting(&self, timer_period: u16) -> bool {
-        if timer_period < 8 {
-            true
-        }
-        else if self.next_period(timer_period) == 0x7FF {
-            true
-        }
-        else {
-            false
-        }
+        timer_period < 8 || self.next_period(timer_period) == 0x7FF
     }
 
     pub fn next_period(&self, timer_period: u16) -> u16 {
@@ -82,13 +73,10 @@ impl Sweep {
 
         if new_period > 0x7FF {
             0x7FF
-        }
-        else if timer_period < 8 {
+        } else if timer_period < 8 {
             timer_period
-        }
-        else {
+        } else {
             new_period
         }
     }
-
 }

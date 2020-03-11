@@ -23,9 +23,10 @@ impl FromStr for Flag {
     fn from_str(s: &str) -> Result<Flag, Self::Err> {
         if s == "-v" || s == "--verify" {
             Ok(Flag::Verify)
-        }
-        else {
-            Err(ConfigParseError{ error: format!("Unrecognized flag '{}'", s) })
+        } else {
+            Err(ConfigParseError {
+                error: format!("Unrecognized flag '{}'", s),
+            })
         }
     }
 }
@@ -33,7 +34,9 @@ impl FromStr for Flag {
 impl Config {
     fn parse_args(args: &[String]) -> Result<(Vec<Flag>, PathBuf), ConfigParseError> {
         if args.len() < 2 {
-            return Err(ConfigParseError{ error: "Not enough arguments provided".to_string() });
+            return Err(ConfigParseError {
+                error: "Not enough arguments provided".to_string(),
+            });
         }
 
         let args = &args[1..];
@@ -41,10 +44,15 @@ impl Config {
         let flags = &args[..args.len() - 1];
 
         if !flags.iter().all(|f| f.starts_with('-')) {
-            return Err(ConfigParseError{ error: "More than one path provided".to_string() });
+            return Err(ConfigParseError {
+                error: "More than one path provided".to_string(),
+            });
         }
 
-        let flags = flags.iter().map(|s| s.parse()).collect::<Result<Vec<Flag>, _>>()?;
+        let flags = flags
+            .iter()
+            .map(|s| s.parse())
+            .collect::<Result<Vec<Flag>, _>>()?;
 
         let path = PathBuf::from(&args[args.len() - 1]);
 
@@ -54,12 +62,9 @@ impl Config {
     pub fn from_args(args: &[String]) -> Result<Config, ConfigParseError> {
         let (flags, rom_path) = Config::parse_args(args)?;
 
-        let verify = flags.iter().find(|&f| f == &Flag::Verify).is_some();
+        let verify = flags.iter().any(|f| f == &Flag::Verify);
 
-        Ok(Config {
-            rom_path,
-            verify, 
-        })
+        Ok(Config { rom_path, verify })
     }
 }
 

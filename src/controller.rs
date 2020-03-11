@@ -1,6 +1,7 @@
 use sdl2::event::Event;
 use sdl2::keyboard::Keycode;
 
+#[derive(Default, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Controller {
     state: u8,
     shift: u8,
@@ -9,11 +10,7 @@ pub struct Controller {
 
 impl Controller {
     pub fn new() -> Controller {
-        Controller {
-            state: 0,
-            shift: 0,
-            strobe: false,
-        }
+        Controller::default()
     }
 
     pub fn update_from_keys(&mut self, keys: &[Event]) {

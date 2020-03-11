@@ -1,6 +1,6 @@
+use super::Context;
 use crate::mem_location::*;
 use enum_dispatch::enum_dispatch;
-use super::Context;
 
 mod mapper0;
 mod mapper1;
@@ -25,7 +25,7 @@ type MapperResult<'a> = AnyMemLocation<'a>;
 pub trait Mapped {
     fn mem_cpu<'a>(&'a self, addr: u16, context: &'a Context) -> MapperResult<'a>;
 
-    fn mem_ppu<'a>(&'a self, addr: u16) -> MapperResult<'a>;
+    fn mem_ppu(&self, addr: u16) -> MapperResult;
 
     fn map_nametable_index(&self, mut index: usize) -> usize {
         assert!(index < 8);
@@ -33,15 +33,9 @@ pub trait Mapped {
         index %= 4;
 
         match self.mirror_mode() {
-            MirrorMode::OneScreenLowerBank => {
-                0
-            }
-            MirrorMode::OneScreenUpperBank => {
-                1
-            }
-            MirrorMode::Vertical => {
-                index % 2
-            }
+            MirrorMode::OneScreenLowerBank => 0,
+            MirrorMode::OneScreenUpperBank => 1,
+            MirrorMode::Vertical => index % 2,
             MirrorMode::Horizontal => {
                 if index < 2 {
                     0
@@ -85,4 +79,3 @@ pub enum AnyMemLocation<'a> {
     Mapper3Location(Mapper3Location<'a>),
     Mapper4Location(Mapper4Location<'a>),
 }
-

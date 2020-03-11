@@ -1,5 +1,5 @@
-use arrayvec::ArrayVec;
 use super::OAMEntry;
+use arrayvec::ArrayVec;
 
 pub struct Evaluator {
     sprites: ArrayVec<[(usize, OAMEntry); 8]>,
@@ -26,29 +26,26 @@ impl Evaluator {
         }
 
         match pixel {
-            1..=64   => {
+            1..=64 => {
                 // PPU does some writes here
                 self.sprites = ArrayVec::new();
             }
             65..=256 => {
-                if pixel % 2 == 1 && scanline >= 1 {
-                    if self.current_index < 64 {
-                        if self.sprites.len() < 8 {
-                            let entry = &oam[self.current_index];
-                            if entry.y as usize <= scanline && scanline < entry.y as usize + max_height {
-                                self.sprites.push((self.current_index, *entry));
-                            }
-
-                        } else {
-                            // TODO: Sprite overflow
+                if pixel % 2 == 1 && scanline >= 1 && self.current_index < 64 {
+                    if self.sprites.len() < 8 {
+                        let entry = &oam[self.current_index];
+                        if entry.y as usize <= scanline && scanline < entry.y as usize + max_height
+                        {
+                            self.sprites.push((self.current_index, *entry));
                         }
-
-                        self.current_index += 1;
+                    } else {
+                        // TODO: Sprite overflow
                     }
+
+                    self.current_index += 1;
                 }
             }
-            257..=320 |
-            321..=340 => {
+            257..=320 | 321..=340 => {
                 self.next_sprites = self.sprites.clone();
                 self.current_index = 0;
             }

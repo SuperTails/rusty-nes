@@ -45,8 +45,7 @@ impl Rom {
             ((size_upper as usize) << 4 | (size_lower as usize)) * chunk_size
         };
 
-        let mut result = Vec::with_capacity(size);
-        result.resize(size, 0);
+        let mut result = vec![0; size];
 
         file.read_exact(&mut result).unwrap_or_else(|_err| {
             println!("Failed to fill buffer of size {}KiB", size / chunk_size);
@@ -87,7 +86,11 @@ impl Rom {
 
         let prg_ram_len = {
             let mut prg_ram_chunks = header[8] as usize;
-            prg_ram_chunks = if prg_ram_chunks == 0 { 1 } else { prg_ram_chunks };
+            prg_ram_chunks = if prg_ram_chunks == 0 {
+                1
+            } else {
+                prg_ram_chunks
+            };
             prg_ram_chunks * 0x2000
         };
 
@@ -100,8 +103,7 @@ impl Rom {
         let _prg_ram_eeprom_size = header[10];
         let chr_ram_len = if header[11] != 0 {
             64 << (header[11] & 0xF) as usize
-        }
-        else {
+        } else {
             0
         };
 
@@ -111,13 +113,15 @@ impl Rom {
 
         let _def_exp_device = header[15] & 0x3F;
 
-        let trainer = trainer.then_with(|| {
+        let trainer = if trainer {
             let mut trainer_buf = [0; 512];
 
             file.read_exact(&mut trainer_buf).unwrap();
 
-            trainer_buf
-        });
+            Some(trainer_buf)
+        } else {
+            None
+        };
 
         let prg_rom = Rom::read_area(header[9] & 0x0F, header[4], &mut file, true);
         let chr_rom = Rom::read_area((header[9] & 0xF0) >> 4, header[5], &mut file, false);

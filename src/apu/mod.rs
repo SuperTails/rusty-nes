@@ -1,18 +1,18 @@
-use sdl2::audio::AudioCallback;
-use std::sync::{Arc, Mutex};
 use crate::cpu::CPU;
 use crate::Context;
+use sdl2::audio::AudioCallback;
+use std::sync::{Arc, Mutex};
 
+mod dmc;
+mod envelope;
 mod noise_gen;
 mod pulse_gen;
 mod triangle_gen;
-mod dmc;
-mod envelope;
 
+use dmc::DMC;
 use noise_gen::NoiseGen;
 use pulse_gen::PulseGen;
 use triangle_gen::TriangleGen;
-use dmc::DMC;
 
 // APU clock rate is 894886.5Hz
 // About once every 56 cycles @ 16KHz
@@ -111,24 +111,48 @@ impl APU {
 
     // TODO: Mixing
     pub fn output(&self) -> f64 {
-        let pulse_1_out = if self.pulse_1_enable { self.pulse_1.output() } else { 0 };
-        let pulse_2_out = if self.pulse_2_enable { self.pulse_2.output() } else { 0 };
+        let pulse_1_out = if self.pulse_1_enable {
+            self.pulse_1.output()
+        } else {
+            0
+        };
+        let pulse_2_out = if self.pulse_2_enable {
+            self.pulse_2.output()
+        } else {
+            0
+        };
 
         let pulse_out = if pulse_1_out == 0 && pulse_2_out == 0 {
             0.0
-        }
-        else {
+        } else {
             95.88 / (8128.0 / (pulse_1_out as f64 + pulse_2_out as f64) + 100.0)
         };
 
-        let tri_out = if self.triangle_enable { self.triangle_gen.output() } else { 0 };
-        let noise_out = if self.noise_enable { self.noise.output() } else { 0 };
-        let dmc_out = if self.dmc_enable { self.dmc.output() } else { 0 };
+        let tri_out = if self.triangle_enable {
+            self.triangle_gen.output()
+        } else {
+            0
+        };
+        let noise_out = if self.noise_enable {
+            self.noise.output()
+        } else {
+            0
+        };
+        let dmc_out = if self.dmc_enable {
+            self.dmc.output()
+        } else {
+            0
+        };
 
         let other_out = if tri_out == 0 && noise_out == 0 && dmc_out == 0 {
             0.0
         } else {
-            159.79 / (1.0 / (tri_out as f64 / 8227.0 + noise_out as f64 / 12241.0 + dmc_out as f64 / 22638.0) + 100.0)
+            159.79
+                / (1.0
+                    / (tri_out as f64 / 8227.0
+                        + noise_out as f64 / 12241.0
+                        + dmc_out as f64 / 22638.0)
+                    + 100.0)
         };
 
         pulse_out + other_out
@@ -186,7 +210,8 @@ impl APU {
             if self.cycle % (56 * 2) == 0 {
                 {
                     const MASTER_VOLUME: f32 = 1.0;
-                    self.audio_data.lock().unwrap()[self.audio_data_idx] = self.output() as f32 * MASTER_VOLUME;
+                    self.audio_data.lock().unwrap()[self.audio_data_idx] =
+                        self.output() as f32 * MASTER_VOLUME;
                 }
 
                 self.audio_data_idx += 1;
@@ -201,7 +226,10 @@ impl APU {
         match reg {
             0x15 => self.get_status(),
             0x17 => self.get_counter_state(),
-            _ => { println!("Returning 0 from unknown APU register {:#X}", reg); 0 },
+            _ => {
+                println!("Returning 0 from unknown APU register {:#X}", reg);
+                0
+            }
         }
     }
 
@@ -224,13 +252,21 @@ impl APU {
             }
             0x15 => {
                 self.pulse_1_enable = value & (1 << 0) != 0;
-                if !self.pulse_1_enable { self.pulse_1.on_disable(); }
+                if !self.pulse_1_enable {
+                    self.pulse_1.on_disable();
+                }
                 self.pulse_2_enable = value & (1 << 1) != 0;
-                if !self.pulse_2_enable { self.pulse_2.on_disable(); }
+                if !self.pulse_2_enable {
+                    self.pulse_2.on_disable();
+                }
                 self.triangle_enable = value & (1 << 2) != 0;
-                if !self.triangle_enable { self.triangle_gen.on_disable(); }
+                if !self.triangle_enable {
+                    self.triangle_gen.on_disable();
+                }
                 self.noise_enable = value & (1 << 3) != 0;
-                if !self.noise_enable { self.noise.on_disable(); }
+                if !self.noise_enable {
+                    self.noise.on_disable();
+                }
                 self.dmc_enable = value & (1 << 4) != 0;
             }
             0x17 => {

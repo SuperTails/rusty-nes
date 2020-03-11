@@ -1,8 +1,10 @@
 use crate::apu::APU;
 use crate::controller::Controller;
 use crate::cpu::CPU;
-use crate::mapper::{AnyMemLocation, Mapper0Ram, Mapper1Location, Mapper3Location, Mapper4Location};
-use crate::ppu::{PPU, nametable::NAMETABLE_SIZE};
+use crate::mapper::{
+    AnyMemLocation, Mapper0Ram, Mapper1Location, Mapper3Location, Mapper4Location,
+};
+use crate::ppu::{nametable::NAMETABLE_SIZE, PPU};
 use crate::Context;
 use enum_dispatch::enum_dispatch;
 use std::cell::RefCell;
@@ -119,7 +121,7 @@ impl<'a> MemLocation<'a> for PPURegister<'a> {
             PPURegInt::Status => {
                 let mut ppu = self.ppu.borrow_mut();
                 *ppu.write_second.borrow_mut() = false;
-                let decay = ppu.decay & 0b00011111;
+                let decay = ppu.decay & 0b0001_1111;
                 let new_status = ppu.status & !0x80;
                 std::mem::replace(&mut ppu.status, new_status) | decay
             }
@@ -134,9 +136,7 @@ impl<'a> MemLocation<'a> for PPURegister<'a> {
                     _ => unreachable!(),
                 }
             }
-            PPURegInt::Scroll | PPURegInt::Addr | PPURegInt::Oamaddr => {
-                self.ppu.borrow().decay
-            }
+            PPURegInt::Scroll | PPURegInt::Addr | PPURegInt::Oamaddr => self.ppu.borrow().decay,
             PPURegInt::Data => {
                 let addr = self.ppu.borrow().address();
                 let mut ppu = self.ppu.borrow_mut();
@@ -159,7 +159,10 @@ impl<'a> MemLocation<'a> for PPURegister<'a> {
         match self.reg {
             PPURegInt::Ctrl => {
                 self.ppu.borrow_mut().ctrl.0 = value;
-                self.ppu.borrow_mut().temp_address.set_nametable(value as u16 & 0b11);
+                self.ppu
+                    .borrow_mut()
+                    .temp_address
+                    .set_nametable(value as u16 & 0b11);
             }
             PPURegInt::Mask => {
                 self.ppu.borrow_mut().mask.0 = value;

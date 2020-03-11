@@ -33,7 +33,7 @@ pub enum Address {
 }
 
 impl AddressingMode {
-    pub fn len(&self) -> usize {
+    pub fn size(self) -> usize {
         match self {
             AddressingMode::Impl => 1,
             AddressingMode::Imm => 2,
@@ -50,7 +50,7 @@ impl AddressingMode {
         }
     }
 
-    pub fn address(&self, ctx: &Context, cpu: &CPU) -> (Address, usize) {
+    pub fn address(self, ctx: &Context, cpu: &CPU) -> (Address, usize) {
         match self {
             AddressingMode::Impl => (Address::Implied, 0),
             AddressingMode::Imm => (Address::Immediate(cpu.read(cpu.pc + 1, ctx)), 0),
@@ -181,19 +181,19 @@ impl Instruction {
         // Check for page boundary crossings
         // if this is a branch instruction
         if self.mode == AddressingMode::Rel {
-            let unbranched = last_pc + self.mode.len() as u16;
+            let unbranched = last_pc + self.mode.size() as u16;
             let taken = last_pc != cpu.pc;
 
             if taken {
                 cycles += 1;
 
-                if unbranched >> 8 != (cpu.pc + self.mode.len() as u16) >> 8 {
+                if unbranched >> 8 != (cpu.pc + self.mode.size() as u16) >> 8 {
                     cycles += 1;
                 }
             }
         }
 
-        cpu.pc += self.mode.len() as u16;
+        cpu.pc += self.mode.size() as u16;
 
         cycles
     }
@@ -420,7 +420,7 @@ fn parse_instruction_list() -> Vec<(String, AddressingMode, u8)> {
 
         for line in listing.lines().skip(7) {
             let words: Vec<_> = line.split(' ').filter(|s| !s.is_empty()).collect();
-            if words.len() == 0 {
+            if words.is_empty() {
                 continue;
             }
             assert!(

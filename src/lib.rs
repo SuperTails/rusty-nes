@@ -1,5 +1,6 @@
-#![feature(bool_to_option)] // TODO: Figure out why I still need
+//#![feature(bool_to_option)] // TODO: Figure out why I still need
 #![allow(unused_parens)]
+#![allow(clippy::identity_op)]
 
 #[macro_use]
 extern crate num_derive;
@@ -16,13 +17,13 @@ extern crate arrayvec;
 extern crate sdl2;
 
 pub mod apu;
+pub mod config;
 pub mod controller;
 pub mod cpu;
 pub mod mapper;
+mod mem_location;
 pub mod ppu;
 pub mod rom;
-pub mod config;
-mod mem_location;
 mod sdl_system;
 
 use mapper::AnyMemLocation;
@@ -30,18 +31,18 @@ use mem_location::*;
 use sdl_system::SDLSystem;
 
 use apu::{APUAudio, APU};
+use config::{Config, CONTROLLER_POLL_INTERVAL};
 use controller::Controller;
 use cpu::CPU;
 use mapper::{Mapped, Mapper0, Mapper1, Mapper3, Mapper4};
 use num_traits::cast::FromPrimitive;
 use ppu::PPU;
 use rom::Rom;
-use std::cell::RefCell;
-use std::io::{Read, Write};
-use config::{Config, CONTROLLER_POLL_INTERVAL};
+use sdl2::audio::AudioSpecDesired;
 use sdl2::event::Event;
 use sdl2::keyboard::Keycode;
-use sdl2::audio::AudioSpecDesired;
+use std::cell::RefCell;
+use std::io::{Read, Write};
 
 /*
  * Mapping 0:
@@ -70,7 +71,7 @@ pub struct Context {
 impl Context {
     pub fn new(rom: Rom, savedata: Option<Vec<u8>>) -> Context {
         let mapper: Box<dyn Mapped> = if rom.mapper == 0 {
-            let chr = if rom.chr_rom.len() == 0 {
+            let chr = if rom.chr_rom.is_empty() {
                 // TODO: Figure this out
                 // let len = rom.chr_ram_len;
                 let len = 0x2000;
@@ -87,18 +88,16 @@ impl Context {
         } else if rom.mapper == 1 {
             /*Box::new(RefCell::new(Mapper1::new(rom.prg_rom, rom.chr_rom)))*/
             let mut chr = rom.chr_rom;
-            let chr_is_rom = chr.len() != 0;
+            let chr_is_rom = !chr.is_empty();
             if !chr_is_rom {
                 if rom.chr_ram_len == 0 {
                     println!("Assuming CHR RAM size of 8KiB");
                     chr.resize(0x2000, 0);
-                }
-                else {
+                } else {
                     println!("CHR RAM len: {:#X}", rom.chr_ram_len);
                     chr.resize(rom.chr_ram_len, 0);
                 }
-            }
-            else {
+            } else {
                 println!("Using CHR ROM of size {:#X}", chr.len());
             }
             Box::new(Mapper1::new(rom.prg_rom, savedata, chr, chr_is_rom))
@@ -133,17 +132,16 @@ impl Context {
             mapper,
             cycle: 0,
             cpu_pause: RefCell::new(0),
-            ppu: RefCell::new(PPU::new(&sdl_system.canvas().default_pixel_format())),
+            ppu: RefCell::new(PPU::new(sdl_system.canvas().default_pixel_format())),
             cpu: RefCell::new(CPU::new()),
             apu: RefCell::new(apu),
             controller: RefCell::new(Controller::new()),
             sdl_system: RefCell::new(sdl_system),
             controller_poll_timer: CONTROLLER_POLL_INTERVAL,
         }
-
     }
 
-    pub fn cpu_address<'a>(&'a self, addr: u16) -> AnyMemLocation<'a> {
+    pub fn cpu_address(&self, addr: u16) -> AnyMemLocation {
         match addr {
             0x0000..=0x1FFF => CPURamLoc {
                 cpu: &self.cpu,
@@ -190,7 +188,7 @@ impl Context {
         }
     }
 
-    pub fn ppu_address<'a>(&'a self, addr: u16) -> AnyMemLocation<'a> {
+    pub fn ppu_address(&self, addr: u16) -> AnyMemLocation {
         let addr = addr % 0x4000;
         match addr {
             0x0000..=0x1FFF => self.mapper.mem_ppu(addr),
@@ -199,33 +197,11 @@ impl Context {
                 addr: self.mapper.map_nametable(addr) as usize,
             }
             .into(),
-            /* TODO: Do this better */
-            0x3F10 => PPUPalette {
+            _ => PPUPalette {
                 ppu: &self.ppu,
-                addr: 0x0,
+                addr: PPU::palette_idx(addr),
             }
             .into(),
-            0x3F14 => PPUPalette {
-                ppu: &self.ppu,
-                addr: 0x4,
-            }
-            .into(),
-            0x3F18 => PPUPalette {
-                ppu: &self.ppu,
-                addr: 0x8,
-            }
-            .into(),
-            0x3F1C => PPUPalette {
-                ppu: &self.ppu,
-                addr: 0xC,
-            }
-            .into(),
-            0x3F00..=0x3FFF => PPUPalette {
-                ppu: &self.ppu,
-                addr: ((addr - 0x3F00) % 0x20) as usize,
-            }
-            .into(),
-            _ => unreachable!(),
         }
     }
 
@@ -237,13 +213,12 @@ impl Context {
         self.cpu_address(addr).write(value)
     }
 
-    pub fn next(&mut self) -> bool {
+    pub fn advance(&mut self) -> bool {
         let mut should_run = false;
 
         if self.controller_poll_timer > 0 {
             self.controller_poll_timer -= 1;
-        }
-        else {
+        } else {
             self.controller_poll_timer = CONTROLLER_POLL_INTERVAL;
 
             let mut key_events = Vec::new();
@@ -270,9 +245,7 @@ impl Context {
                     } => {
                         should_run = true;
                     }
-                    Event::KeyDown {
-                        ..
-                    } => {
+                    Event::KeyDown { .. } => {
                         key_events.push(event);
                     }
                     _ => {}
@@ -286,9 +259,7 @@ impl Context {
             if *self.cpu_pause.borrow() != 0 {
                 let c = *self.cpu_pause.borrow();
                 self.apu.borrow_mut().next(c, self, &self.cpu.borrow());
-                self.ppu
-                    .borrow_mut()
-                    .next(c, self, &self.cpu.borrow());
+                self.ppu.borrow_mut().next(c, self, &self.cpu.borrow());
                 self.cycle += c;
                 *self.cpu_pause.borrow_mut() = 0;
             }
@@ -300,7 +271,9 @@ impl Context {
 
             //println!("... with starting PPU position {}, {}", self.ppu.borrow().pixel(), self.ppu.borrow().scanline());
 
-            self.apu.borrow_mut().next(cycles as usize, self, &self.cpu.borrow());
+            self.apu
+                .borrow_mut()
+                .next(cycles as usize, self, &self.cpu.borrow());
             self.ppu
                 .borrow_mut()
                 .next(cycles as usize, self, &self.cpu.borrow());
@@ -310,20 +283,18 @@ impl Context {
             //println!("Mode: {:?}, cycles: {}", instr.mode, cycles);
 
             // TODO: ???????????????????
-            if !(self.ppu.borrow().pixel() == 2 && self.ppu.borrow().scanline() == 241) {
-                if self.ppu.borrow_mut().nmi_falling() {
-                    self.cpu.borrow_mut().trigger_nmi(self);
-                    self.cycle += 7;
+            if !(self.ppu.borrow().pixel() == 2 && self.ppu.borrow().scanline() == 241)
+                && self.ppu.borrow_mut().nmi_falling()
+            {
+                self.cpu.borrow_mut().trigger_nmi(self);
+                self.cycle += 7;
 
-                    self.apu.borrow_mut().next(7, self, &self.cpu.borrow());
-                    self.ppu
-                        .borrow_mut()
-                        .next(7, self, &self.cpu.borrow());
-                }
+                self.apu.borrow_mut().next(7, self, &self.cpu.borrow());
+                self.ppu.borrow_mut().next(7, self, &self.cpu.borrow());
             }
         }
 
-        return false;
+        false
     }
 }
 
@@ -350,7 +321,10 @@ pub fn run(config: &Config) {
 
     let savedata = if mem_path.exists() {
         let mut savedata = Vec::new();
-        std::fs::File::open(&mem_path).unwrap().read_to_end(&mut savedata).unwrap();
+        std::fs::File::open(&mem_path)
+            .unwrap()
+            .read_to_end(&mut savedata)
+            .unwrap();
         Some(savedata)
     } else {
         None
@@ -386,12 +360,20 @@ pub fn run(config: &Config) {
 
             {
                 let mut cpu = ctx.cpu.borrow_mut();
-                if cpu.read(cpu.pc - 1, &ctx) == 0x40 && cpu.read(cpu.pc - 2, &ctx) == 0x16 && cpu.read(cpu.pc - 3, &ctx) != 0x8D {
+                if cpu.read(cpu.pc - 1, &ctx) == 0x40
+                    && cpu.read(cpu.pc - 2, &ctx) == 0x16
+                    && cpu.read(cpu.pc - 3, &ctx) != 0x8D
+                {
                     cpu.acc = expected.1;
                     cpu.status = expected.4;
                 }
 
-                if cpu.read(cpu.pc - 1, &ctx) == 0x20 && cpu.read(cpu.pc - 2, &ctx) == 0x02 && cpu.read(cpu.pc - 3, &ctx) == 0xAD && (1..=12).contains(&ctx.ppu.borrow().pixel()) && ctx.ppu.borrow().scanline() == 261 {
+                if cpu.read(cpu.pc - 1, &ctx) == 0x20
+                    && cpu.read(cpu.pc - 2, &ctx) == 0x02
+                    && cpu.read(cpu.pc - 3, &ctx) == 0xAD
+                    && (1..=12).contains(&ctx.ppu.borrow().pixel())
+                    && ctx.ppu.borrow().scanline() == 261
+                {
                     cpu.acc &= !64;
                     let acc = cpu.acc;
                     cpu.update_flags(acc);
@@ -399,11 +381,7 @@ pub fn run(config: &Config) {
             }
 
             match ctx.cycle {
-                118191 |
-                118215 |
-                118239 |
-                118263 |
-                118287 => {
+                118_191 | 118_215 | 118_239 | 118_263 | 118_287 => {
                     ctx.cpu.borrow_mut().acc = 64;
                     ctx.cpu.borrow_mut().update_flags(64);
                 }
@@ -413,19 +391,24 @@ pub fn run(config: &Config) {
             let actual = {
                 let cpu = ctx.cpu.borrow();
                 let ppu = ctx.ppu.borrow();
-                let val = (cpu.pc, cpu.acc, cpu.x, cpu.y, cpu.status, cpu.sp, ctx.cycle, ppu.pixel(), ppu.scanline());
-                val
+                (
+                    cpu.pc,
+                    cpu.acc,
+                    cpu.x,
+                    cpu.y,
+                    cpu.status,
+                    cpu.sp,
+                    ctx.cycle,
+                    ppu.pixel(),
+                    ppu.scanline(),
+                )
             };
-            assert_eq!(
-                expected,
-                &actual,
-                "Frame: {:?}", ctx.ppu.borrow().frame()
-            );
+            assert_eq!(expected, &actual, "Frame: {:?}", ctx.ppu.borrow().frame());
 
-            while !ctx.next() {}
+            while !ctx.advance() {}
         }
     } else {
-        while !ctx.next() {}
+        while !ctx.advance() {}
 
         if battery_backed {
             if mem_path.exists() {
@@ -435,8 +418,8 @@ pub fn run(config: &Config) {
 
             let mut result = [0; 0x2000];
 
-            for i in 0..result.len() {
-                result[i] = ctx.mapper.mem_cpu((0x6000 + i) as u16, &ctx).read();
+            for (idx, res) in result.iter_mut().enumerate() {
+                *res = ctx.mapper.mem_cpu((0x6000 + idx) as u16, &ctx).read();
             }
 
             let mut savefile = std::fs::File::create(mem_path).unwrap();
@@ -446,6 +429,7 @@ pub fn run(config: &Config) {
     }
 }
 
+#[allow(clippy::many_single_char_names)]
 fn parse_log_line(line: &str) -> (u16, u8, u8, u8, u8, u8, usize, usize, usize) {
     let pc = u16::from_str_radix(&line[0..4], 16).unwrap();
     let a = u8::from_str_radix(&line[50..52], 16).unwrap();

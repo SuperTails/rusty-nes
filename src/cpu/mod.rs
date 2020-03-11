@@ -180,14 +180,14 @@ impl CPU {
             "[PC: {:#06X}] A:{:02X} X:{:02X} Y:{:02X} P:{:02X} SP:{:02X} {} {: >4?}:",
             self.pc, self.acc, self.x, self.y, self.status, self.sp, instr.opcode, instr.mode
         );
-        for i in 0..instr.mode.len() {
+        for i in 0..instr.mode.size() {
             print!("{:#04X} ", self.read(self.pc + i as u16, ctx));
         }
-        println!("");
+        println!();
     }
 
     pub fn next(&mut self, ctx: &Context) -> usize {
-        let cycles = match self.state {
+        match self.state {
             State::Reset => {
                 self.pc =
                     (self.read(self.pc + 1, ctx) as u16) << 8 | self.read(self.pc, ctx) as u16;
@@ -211,8 +211,12 @@ impl CPU {
                     instr.run(ctx, self)
                 }
             }
-        };
+        }
+    }
+}
 
-        cycles
+impl Default for CPU {
+    fn default() -> CPU {
+        CPU::new()
     }
 }
