@@ -1,6 +1,7 @@
 use super::Context;
 use crate::mem_location::*;
 use enum_dispatch::enum_dispatch;
+use num_derive::FromPrimitive;
 
 mod mapper0;
 mod mapper1;

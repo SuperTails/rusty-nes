@@ -1,20 +1,5 @@
-//#![feature(bool_to_option)] // TODO: Figure out why I still need
 #![allow(unused_parens)]
 #![allow(clippy::identity_op)]
-
-#[macro_use]
-extern crate num_derive;
-
-#[macro_use]
-extern crate bitfield;
-
-#[macro_use]
-extern crate lazy_static;
-
-extern crate enum_dispatch;
-
-extern crate arrayvec;
-extern crate sdl2;
 
 pub mod apu;
 pub mod config;

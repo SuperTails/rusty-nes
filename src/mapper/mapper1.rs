@@ -1,6 +1,7 @@
 use super::{Mapped, MapperResult, MirrorMode};
 use crate::mem_location::{MemLocation, RomLocation};
 use crate::Context;
+use num_derive::FromPrimitive;
 use num_traits::cast::FromPrimitive;
 use std::cell::RefCell;
 

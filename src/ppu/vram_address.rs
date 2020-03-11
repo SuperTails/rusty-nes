@@ -1,3 +1,5 @@
+use bitfield::bitfield;
+
 bitfield! {
     #[derive(Copy, Clone, PartialEq, Eq)]
     pub struct VRAMAddress(u16);
@@ -11,5 +13,3 @@ bitfield! {
 
     pub fine_y, set_fine_y: 14, 12;
 }
-
-impl VRAMAddress {}

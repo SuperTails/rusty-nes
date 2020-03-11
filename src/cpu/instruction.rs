@@ -2,6 +2,7 @@
 
 use super::CPU;
 use crate::Context;
+use lazy_static::lazy_static;
 use std::cmp::Ordering;
 use std::num::Wrapping;
 use std::str::FromStr;

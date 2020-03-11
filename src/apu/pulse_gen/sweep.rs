@@ -1,3 +1,5 @@
+use bitfield::bitfield;
+
 bitfield! {
     #[derive(Clone, Copy)]
     pub struct SweepCtrl(u8);

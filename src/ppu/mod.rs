@@ -2,6 +2,7 @@ use crate::cpu::CPU;
 use crate::mem_location::MemLocation;
 use crate::Context;
 use arrayvec::ArrayVec;
+use bitfield::bitfield;
 use nametable::{Nametable, NAMETABLE_SIZE};
 use oam::{OAMEntry, OAMEntryAttrs};
 use sdl2::pixels::{Color, PixelFormatEnum};

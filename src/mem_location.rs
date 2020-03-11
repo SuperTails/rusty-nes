@@ -7,6 +7,7 @@ use crate::mapper::{
 use crate::ppu::{nametable::NAMETABLE_SIZE, PPU};
 use crate::Context;
 use enum_dispatch::enum_dispatch;
+use num_derive::FromPrimitive;
 use std::cell::RefCell;
 use std::num::Wrapping;
 
