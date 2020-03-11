@@ -1,6 +1,5 @@
 use super::Context;
 use crate::mem_location::*;
-use enum_dispatch::enum_dispatch;
 use num_derive::FromPrimitive;
 
 mod mapper0;
@@ -65,18 +64,54 @@ pub trait Mapped {
     fn mirror_mode(&self) -> MirrorMode;
 }
 
-#[enum_dispatch]
-pub enum AnyMemLocation<'a> {
-    CPURamLoc(CPURamLoc<'a>),
-    RamLocation(RamLocation<'a>),
-    RomLocation(RomLocation),
-    PPUNametable(PPUNametable<'a>),
-    PPUPalette(PPUPalette<'a>),
-    PPURegister(PPURegister<'a>),
-    APURegister(APURegister<'a>),
-    CTLRegister(CTLRegister<'a>),
-    Mapper0Ram(Mapper0Ram<'a>),
-    Mapper1Location(Mapper1Location<'a>),
-    Mapper3Location(Mapper3Location<'a>),
-    Mapper4Location(Mapper4Location<'a>),
+// why can't the enum_dispatch crate just work with rls, ughhh
+macro_rules! mem_loc_dispatch {
+    (pub enum $enumname:ident<'a> { $($varname:ident($structname:ident $(<$l:lifetime>)?),)* }) => {
+        pub enum $enumname<'a> {
+            $($varname($crate::mapper::$structname $(<$l>)?),)*
+        }
+
+        impl<'a> MemLocation<'a> for $enumname<'a> {
+            fn read(&'a mut self) -> u8 {
+                match self {
+                    $(
+                        Self::$varname(v) => v.read(),
+                    )*
+                }
+            }
+
+            fn write(&'a mut self, value: u8) {
+                match self {
+                    $(
+                        Self::$varname(v) => v.write(value),  
+                    )*
+                }
+            }
+        }
+
+        $(
+        impl<'a> From<$structname $(<$l>)?> for $enumname<'a> {
+            fn from(f: $structname $(<$l>)?) -> Self {
+                Self::$varname(f)
+            }
+        }
+        )*
+    }
+}
+
+mem_loc_dispatch! {
+    pub enum AnyMemLocation<'a> {
+        CPURamLoc(CPURamLoc<'a>),
+        RamLocation(RamLocation<'a>),
+        RomLocation(RomLocation),
+        PPUNametable(PPUNametable<'a>),
+        PPUPalette(PPUPalette<'a>),
+        PPURegister(PPURegister<'a>),
+        APURegister(APURegister<'a>),
+        CTLRegister(CTLRegister<'a>),
+        Mapper0Ram(Mapper0Ram<'a>),
+        Mapper1Location(Mapper1Location<'a>),
+        Mapper3Location(Mapper3Location<'a>),
+        Mapper4Location(Mapper4Location<'a>),
+    }
 }

@@ -1,17 +1,12 @@
 use crate::apu::APU;
 use crate::controller::Controller;
 use crate::cpu::CPU;
-use crate::mapper::{
-    AnyMemLocation, Mapper0Ram, Mapper1Location, Mapper3Location, Mapper4Location,
-};
 use crate::ppu::{nametable::NAMETABLE_SIZE, PPU};
 use crate::Context;
-use enum_dispatch::enum_dispatch;
 use num_derive::FromPrimitive;
 use std::cell::RefCell;
 use std::num::Wrapping;
 
-#[enum_dispatch(AnyMemLocation)]
 pub trait MemLocation<'a> {
     fn read(&'a mut self) -> u8;
 
