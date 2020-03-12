@@ -242,15 +242,17 @@ impl Context {
 
             //println!("Mode: {:?}, cycles: {}", instr.mode, cycles);
 
-            // TODO: ???????????????????
-            if !(self.ppu.borrow().pixel() == 2 && self.ppu.borrow().scanline() == 241)
-                && self.ppu.borrow_mut().nmi_falling()
-            {
-                self.cpu.borrow_mut().trigger_nmi(self);
-                self.cycle += 7;
 
-                self.apu.borrow_mut().next(7, self, &self.cpu.borrow());
-                self.ppu.borrow_mut().next(7, self, &self.cpu.borrow());
+            // TODO: ???????????????????
+            if !(self.ppu.borrow().pixel() == 2 && self.ppu.borrow().scanline() == 241) {
+                let nmi_falling = self.ppu.borrow_mut().nmi_falling();
+                if nmi_falling {
+                    self.cpu.borrow_mut().trigger_nmi(self);
+                    self.cycle += 7;
+
+                    self.apu.borrow_mut().next(7, self, &self.cpu.borrow());
+                    self.ppu.borrow_mut().next(7, self, &self.cpu.borrow());
+                }
             }
         }
 

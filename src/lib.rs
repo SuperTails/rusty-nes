@@ -22,7 +22,7 @@ use std::io::Read;
 pub fn run(config: &Config) -> Result<(), String> {
     let rom = Rom::new(&config.rom_path).map_err(|e| format!("Error when loading ROM: {}", e))?;
 
-    /*println!(
+    println!(
         "ROM has mapper {} and submapper {}",
         rom.mapper, rom.submapper
     );
@@ -31,7 +31,7 @@ pub fn run(config: &Config) -> Result<(), String> {
         rom.prg_rom.len(),
         rom.chr_rom.len(),
         rom.misc_rom.len()
-    );*/
+    );
 
     let battery_backed = rom.battery_backed;
 
