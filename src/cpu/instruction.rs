@@ -1,7 +1,7 @@
 #![allow(non_snake_case)]
 
 use super::CPU;
-use crate::Context;
+use crate::context::CpuContext;
 use lazy_static::lazy_static;
 use std::cmp::Ordering;
 use std::num::Wrapping;
@@ -51,7 +51,7 @@ impl AddressingMode {
         }
     }
 
-    pub fn address(self, ctx: &Context, cpu: &CPU) -> (Address, usize) {
+    pub fn address(self, ctx: &mut CpuContext, cpu: &CPU) -> (Address, usize) {
         match self {
             AddressingMode::Impl => (Address::Implied, 0),
             AddressingMode::Imm => (Address::Immediate(cpu.read(cpu.pc + 1, ctx)), 0),
@@ -125,13 +125,13 @@ impl FromStr for AddressingMode {
 }
 
 enum Operation {
-    Addressed(&'static (dyn Fn(&Context, &mut CPU, u16) + Sync)),
-    Immediate(&'static (dyn Fn(&Context, &mut CPU, u8) + Sync)),
-    Implied(&'static (dyn Fn(&Context, &mut CPU) + Sync)),
+    Addressed(&'static (dyn Fn(&mut CpuContext, &mut CPU, u16) + Sync)),
+    Immediate(&'static (dyn Fn(&mut CpuContext, &mut CPU, u8) + Sync)),
+    Implied(&'static (dyn Fn(&mut CpuContext, &mut CPU) + Sync)),
 }
 
 impl Operation {
-    pub fn run(&self, ctx: &Context, cpu: &mut CPU, addr: &Address) {
+    pub fn run(&self, ctx: &mut CpuContext, cpu: &mut CPU, addr: &Address) {
         match self {
             Operation::Addressed(f) => {
                 if let Address::Addressed(a) = addr {
@@ -166,7 +166,7 @@ pub struct Instruction {
 }
 
 impl Instruction {
-    pub fn run(&self, ctx: &Context, cpu: &mut CPU) -> usize {
+    pub fn run(&self, ctx: &mut CpuContext, cpu: &mut CPU) -> usize {
         let last_pc = cpu.pc;
 
         let (addr, addr_cycles) = self.mode.address(ctx, cpu);
@@ -462,7 +462,7 @@ fn parse_instruction_list() -> Vec<(String, AddressingMode, u8)> {
     result
 }
 
-fn BRANCH(_: &Context, cpu: &mut CPU, offset: u8, cond: bool) {
+fn BRANCH(_: &mut CpuContext, cpu: &mut CPU, offset: u8, cond: bool) {
     if cond {
         let neg = offset >> 7 != 0;
         if neg {
@@ -473,7 +473,7 @@ fn BRANCH(_: &Context, cpu: &mut CPU, offset: u8, cond: bool) {
     }
 }
 
-fn COMPARE(_: &Context, cpu: &mut CPU, lhs: u8, rhs: u8) {
+fn COMPARE(_: &mut CpuContext, cpu: &mut CPU, lhs: u8, rhs: u8) {
     let diff = (Wrapping(lhs) - Wrapping(rhs)).0;
     match lhs.cmp(&rhs) {
         Ordering::Less => {
@@ -494,7 +494,7 @@ fn COMPARE(_: &Context, cpu: &mut CPU, lhs: u8, rhs: u8) {
     }
 }
 
-fn ADC_imm(_: &Context, cpu: &mut CPU, rhs: u8) {
+fn ADC_imm(_: &mut CpuContext, cpu: &mut CPU, rhs: u8) {
     let res1 = cpu.acc as u16 + rhs as u16 + cpu.get_carry() as u16;
     let result = (res1 % 0x100) as u8;
     let did_carry = res1 & 0x100 != 0;
@@ -505,7 +505,7 @@ fn ADC_imm(_: &Context, cpu: &mut CPU, rhs: u8) {
     cpu.acc = result;
 }
 
-fn SUB(_: &Context, cpu: &mut CPU, rhs: u8) {
+fn SUB(_: &mut CpuContext, cpu: &mut CPU, rhs: u8) {
     let res1 = cpu.acc as u16 + (!rhs) as u16 + cpu.get_carry() as u16;
     let result = (res1 % 0x100) as u8;
     let did_carry = res1 & 0x100 != 0;
@@ -516,7 +516,7 @@ fn SUB(_: &Context, cpu: &mut CPU, rhs: u8) {
     cpu.acc = result;
 }
 
-fn ror(_: &Context, cpu: &mut CPU, mut value: u8) -> u8 {
+fn ror(_: &mut CpuContext, cpu: &mut CPU, mut value: u8) -> u8 {
     let carry_out = value & 1 != 0;
     value >>= 1;
     value |= (cpu.get_carry() as u8) << 7;
@@ -525,7 +525,7 @@ fn ror(_: &Context, cpu: &mut CPU, mut value: u8) -> u8 {
     value
 }
 
-fn rol(_: &Context, cpu: &mut CPU, mut value: u8) -> u8 {
+fn rol(_: &mut CpuContext, cpu: &mut CPU, mut value: u8) -> u8 {
     let carry_out = value & 0x80 != 0;
     value <<= 1;
     value |= cpu.get_carry() as u8;
@@ -534,7 +534,7 @@ fn rol(_: &Context, cpu: &mut CPU, mut value: u8) -> u8 {
     value
 }
 
-fn lsr(_: &Context, cpu: &mut CPU, mut value: u8) -> u8 {
+fn lsr(_: &mut CpuContext, cpu: &mut CPU, mut value: u8) -> u8 {
     let carry = value & 1 != 0;
     value >>= 1;
     cpu.update_flags(value);
@@ -542,30 +542,30 @@ fn lsr(_: &Context, cpu: &mut CPU, mut value: u8) -> u8 {
     value
 }
 
-fn BIT(ctx: &Context, cpu: &mut CPU, addr: u16) {
+fn BIT(ctx: &mut CpuContext, cpu: &mut CPU, addr: u16) {
     let value = cpu.read(addr, ctx);
     cpu.set_neg(value & 0x80 != 0);
     cpu.set_overflow(value & 0x40 != 0);
     cpu.set_zero(cpu.acc & value == 0);
 }
 
-fn AAX(ctx: &Context, cpu: &mut CPU, addr: u16) {
+fn AAX(ctx: &mut CpuContext, cpu: &mut CPU, addr: u16) {
     cpu.write(addr, cpu.acc & cpu.x, ctx);
 }
 
-fn DCP(ctx: &Context, cpu: &mut CPU, addr: u16) {
+fn DCP(ctx: &mut CpuContext, cpu: &mut CPU, addr: u16) {
     let v = (Wrapping(cpu.read(addr, ctx)) - Wrapping(1)).0;
     cpu.write(addr, v, ctx);
     COMPARE(ctx, cpu, cpu.acc, v);
 }
 
-fn ISC(ctx: &Context, cpu: &mut CPU, addr: u16) {
+fn ISC(ctx: &mut CpuContext, cpu: &mut CPU, addr: u16) {
     let v = (Wrapping(cpu.read(addr, ctx)) + Wrapping(1)).0;
     cpu.write(addr, v, ctx);
     SUB(ctx, cpu, v);
 }
 
-fn SLO(ctx: &Context, cpu: &mut CPU, addr: u16) {
+fn SLO(ctx: &mut CpuContext, cpu: &mut CPU, addr: u16) {
     let mut m = cpu.read(addr, ctx);
     let c = m >> 7;
     m <<= 1;
@@ -575,7 +575,7 @@ fn SLO(ctx: &Context, cpu: &mut CPU, addr: u16) {
     cpu.set_carry(c != 0);
 }
 
-fn RLA(ctx: &Context, cpu: &mut CPU, addr: u16) {
+fn RLA(ctx: &mut CpuContext, cpu: &mut CPU, addr: u16) {
     let v = cpu.read(addr, ctx);
     let result = rol(ctx, cpu, v);
     cpu.write(addr, result, ctx);
@@ -583,7 +583,7 @@ fn RLA(ctx: &Context, cpu: &mut CPU, addr: u16) {
     cpu.update_flags(cpu.acc);
 }
 
-fn SRE(ctx: &Context, cpu: &mut CPU, addr: u16) {
+fn SRE(ctx: &mut CpuContext, cpu: &mut CPU, addr: u16) {
     let mut m = cpu.read(addr, ctx);
     let carry = m & 1 != 0;
     m >>= 1;
@@ -594,14 +594,14 @@ fn SRE(ctx: &Context, cpu: &mut CPU, addr: u16) {
     cpu.update_flags(cpu.acc);
 }
 
-fn RRA(ctx: &Context, cpu: &mut CPU, addr: u16) {
+fn RRA(ctx: &mut CpuContext, cpu: &mut CPU, addr: u16) {
     let read = cpu.read(addr, ctx);
     let result = ror(ctx, cpu, read);
     cpu.write(addr, result, ctx);
     ADC_imm(ctx, cpu, result);
 }
 
-fn asl(_: &Context, cpu: &mut CPU, mut val: u8) -> u8 {
+fn asl(_: &mut CpuContext, cpu: &mut CPU, mut val: u8) -> u8 {
     let c = val >> 7 != 0;
     val <<= 1;
     cpu.update_flags(val);
@@ -609,19 +609,19 @@ fn asl(_: &Context, cpu: &mut CPU, mut val: u8) -> u8 {
     val
 }
 
-fn RTI(_: &Context, cpu: &mut CPU) {
+fn RTI(_: &mut CpuContext, cpu: &mut CPU) {
     cpu.status = (cpu.pop() & !(0b01 << 4)) | 0b10 << 4;
     cpu.pc = cpu.pop() as u16;
     cpu.pc |= (cpu.pop() as u16) << 8;
     cpu.pc -= 1;
 }
-fn JSR(_: &Context, cpu: &mut CPU, addr: u16) {
+fn JSR(_: &mut CpuContext, cpu: &mut CPU, addr: u16) {
     let pc = cpu.pc;
     cpu.push(((pc + 2) >> 8) as u8);
     cpu.push(((pc + 2) & 0xFF) as u8);
     cpu.pc = addr - 3;
 }
-fn RTS(_: &Context, cpu: &mut CPU) {
+fn RTS(_: &mut CpuContext, cpu: &mut CPU) {
     let lo = cpu.pop() as u16;
     let hi = cpu.pop() as u16;
     cpu.pc = hi << 8 | lo;
@@ -629,11 +629,11 @@ fn RTS(_: &Context, cpu: &mut CPU) {
 
 macro_rules! make_branch_func {
     ($truename:ident, $falsename:ident, $cond:ident) => {
-        fn $truename(ctx: &Context, cpu: &mut CPU, offset: u8) {
+        fn $truename(ctx: &mut CpuContext, cpu: &mut CPU, offset: u8) {
             BRANCH(ctx, cpu, offset, cpu.$cond())
         }
 
-        fn $falsename(ctx: &Context, cpu: &mut CPU, offset: u8) {
+        fn $falsename(ctx: &mut CpuContext, cpu: &mut CPU, offset: u8) {
             BRANCH(ctx, cpu, offset, !cpu.$cond())
         }
     };
@@ -646,12 +646,12 @@ make_branch_func!(BCS, BCC, get_carry);
 
 macro_rules! make_arith_func {
     ($name:ident, $name2:ident, $op:tt) => {
-        fn $name(_: &Context, cpu: &mut CPU, imm: u8) {
+        fn $name(_: &mut CpuContext, cpu: &mut CPU, imm: u8) {
             cpu.acc $op imm;
             cpu.update_flags(cpu.acc);
         }
 
-        fn $name2(ctx: &Context, cpu: &mut CPU, addr: u16) {
+        fn $name2(ctx: &mut CpuContext, cpu: &mut CPU, addr: u16) {
             let value = cpu.read(addr, ctx);
             $name(ctx, cpu, value)
         }
@@ -664,7 +664,7 @@ make_arith_func!(EOR_imm, EOR, ^=);
 
 macro_rules! make_trans_func {
     ($name:ident, $lhs:ident, $rhs:ident) => {
-        fn $name(_: &Context, cpu: &mut CPU) {
+        fn $name(_: &mut CpuContext, cpu: &mut CPU) {
             cpu.$lhs = cpu.$rhs;
             cpu.update_flags(cpu.$rhs);
         }
@@ -677,34 +677,34 @@ make_trans_func!(TAY, y, acc);
 make_trans_func!(TAX, x, acc);
 make_trans_func!(TSX, x, sp);
 
-fn TXS(_: &Context, cpu: &mut CPU) {
+fn TXS(_: &mut CpuContext, cpu: &mut CPU) {
     cpu.sp = cpu.x;
 }
 
-fn SBC(ctx: &Context, cpu: &mut CPU, addr: u16) {
+fn SBC(ctx: &mut CpuContext, cpu: &mut CPU, addr: u16) {
     let v = cpu.read(addr, ctx);
     SBC_imm(ctx, cpu, v)
 }
-fn SBC_imm(ctx: &Context, cpu: &mut CPU, imm: u8) {
+fn SBC_imm(ctx: &mut CpuContext, cpu: &mut CPU, imm: u8) {
     SUB(ctx, cpu, imm);
 }
-fn ADC(ctx: &Context, cpu: &mut CPU, addr: u16) {
+fn ADC(ctx: &mut CpuContext, cpu: &mut CPU, addr: u16) {
     let v = cpu.read(addr, ctx);
     ADC_imm(ctx, cpu, v);
 }
 
-fn LAX(ctx: &Context, cpu: &mut CPU, addr: u16) {
+fn LAX(ctx: &mut CpuContext, cpu: &mut CPU, addr: u16) {
     LDA(ctx, cpu, addr);
     TAX(ctx, cpu);
 }
 
 macro_rules! make_compare {
     ($name:ident, $name2:ident, $reg:ident) => {
-        fn $name(ctx: &Context, cpu: &mut CPU, imm: u8) {
+        fn $name(ctx: &mut CpuContext, cpu: &mut CPU, imm: u8) {
             COMPARE(ctx, cpu, cpu.$reg, imm);
         }
 
-        fn $name2(ctx: &Context, cpu: &mut CPU, addr: u16) {
+        fn $name2(ctx: &mut CpuContext, cpu: &mut CPU, addr: u16) {
             let val = cpu.read(addr, ctx);
             $name(ctx, cpu, val);
         }
@@ -717,12 +717,12 @@ make_compare!(CPY_imm, CPY, y);
 
 macro_rules! make_shift {
     ($name:ident, $name2:ident, $func:ident) => {
-        fn $name(ctx: &Context, cpu: &mut CPU) {
+        fn $name(ctx: &mut CpuContext, cpu: &mut CPU) {
             let result = $func(ctx, cpu, cpu.acc);
             cpu.acc = result;
         }
 
-        fn $name2(ctx: &Context, cpu: &mut CPU, addr: u16) {
+        fn $name2(ctx: &mut CpuContext, cpu: &mut CPU, addr: u16) {
             let value = cpu.read(addr, ctx);
             let result = $func(ctx, cpu, value);
             cpu.write(addr, result, ctx);
@@ -737,17 +737,17 @@ make_shift!(ROR_imp, ROR, ror);
 
 macro_rules! make_load_store {
     ($loadname_imm:ident, $loadname:ident, $storename:ident, $reg:ident) => {
-        fn $loadname_imm(_: &Context, cpu: &mut CPU, imm: u8) {
+        fn $loadname_imm(_: &mut CpuContext, cpu: &mut CPU, imm: u8) {
             cpu.update_flags(imm);
             cpu.$reg = imm;
         }
 
-        fn $loadname(ctx: &Context, cpu: &mut CPU, addr: u16) {
+        fn $loadname(ctx: &mut CpuContext, cpu: &mut CPU, addr: u16) {
             let value = cpu.read(addr, ctx);
             $loadname_imm(ctx, cpu, value)
         }
 
-        fn $storename(ctx: &Context, cpu: &mut CPU, addr: u16) {
+        fn $storename(ctx: &mut CpuContext, cpu: &mut CPU, addr: u16) {
             let value = cpu.$reg;
             cpu.write(addr, value, ctx);
         }
@@ -758,12 +758,12 @@ make_load_store!(LDA_imm, LDA, STA, acc);
 make_load_store!(LDX_imm, LDX, STX, x);
 make_load_store!(LDY_imm, LDY, STY, y);
 
-fn DEC(ctx: &Context, cpu: &mut CPU, addr: u16) {
+fn DEC(ctx: &mut CpuContext, cpu: &mut CPU, addr: u16) {
     let v = (Wrapping(cpu.read(addr, ctx)) - Wrapping(1)).0;
     cpu.write(addr, v, ctx);
     cpu.update_flags(v);
 }
-fn INC(ctx: &Context, cpu: &mut CPU, addr: u16) {
+fn INC(ctx: &mut CpuContext, cpu: &mut CPU, addr: u16) {
     let v = (Wrapping(cpu.read(addr, ctx)) + Wrapping(1)).0;
     cpu.write(addr, v, ctx);
     cpu.update_flags(v);
@@ -771,13 +771,13 @@ fn INC(ctx: &Context, cpu: &mut CPU, addr: u16) {
 
 macro_rules! make_inc_dec {
     ($decname:ident, $incname:ident, $reg:ident) => {
-        fn $decname(_: &Context, cpu: &mut CPU) {
+        fn $decname(_: &mut CpuContext, cpu: &mut CPU) {
             let result = (Wrapping(cpu.$reg) - Wrapping(1)).0;
             cpu.update_flags(result);
             cpu.$reg = result;
         }
 
-        fn $incname(_: &Context, cpu: &mut CPU) {
+        fn $incname(_: &mut CpuContext, cpu: &mut CPU) {
             let result = (Wrapping(cpu.$reg) + Wrapping(1)).0;
             cpu.update_flags(result);
             cpu.$reg = result;
@@ -788,19 +788,19 @@ macro_rules! make_inc_dec {
 make_inc_dec!(DEX, INX, x);
 make_inc_dec!(DEY, INY, y);
 
-fn PHP(_: &Context, cpu: &mut CPU) {
+fn PHP(_: &mut CpuContext, cpu: &mut CPU) {
     let status = cpu.status | (0b11 << 4);
     cpu.push(status)
 }
-fn PLP(_: &Context, cpu: &mut CPU) {
+fn PLP(_: &mut CpuContext, cpu: &mut CPU) {
     let status = (cpu.pop() & !(0b01 << 4)) | (0b10 << 4);
     cpu.status = status;
 }
 
-fn PHA(_: &Context, cpu: &mut CPU) {
+fn PHA(_: &mut CpuContext, cpu: &mut CPU) {
     cpu.push(cpu.acc);
 }
-fn PLA(_: &Context, cpu: &mut CPU) {
+fn PLA(_: &mut CpuContext, cpu: &mut CPU) {
     let value = cpu.pop();
     cpu.update_flags(value);
     cpu.acc = value;
@@ -808,11 +808,11 @@ fn PLA(_: &Context, cpu: &mut CPU) {
 
 macro_rules! make_flag_setter {
     ($setflag:ident, $clearflag:ident, $setter_name:ident) => {
-        fn $setflag(_: &Context, cpu: &mut CPU) {
+        fn $setflag(_: &mut CpuContext, cpu: &mut CPU) {
             cpu.$setter_name(true);
         }
 
-        fn $clearflag(_: &Context, cpu: &mut CPU) {
+        fn $clearflag(_: &mut CpuContext, cpu: &mut CPU) {
             cpu.$setter_name(false);
         }
     };
@@ -823,17 +823,17 @@ make_flag_setter!(SEI, CLI, set_interrupt);
 make_flag_setter!(_SEV, CLV, set_overflow);
 make_flag_setter!(SED, CLD, set_decimal);
 
-fn JMP_abs(_: &Context, cpu: &mut CPU, addr: u16) {
+fn JMP_abs(_: &mut CpuContext, cpu: &mut CPU, addr: u16) {
     cpu.pc = addr - 3;
 }
-fn JMP_ind(ctx: &Context, cpu: &mut CPU, addr: u16) {
+fn JMP_ind(ctx: &mut CpuContext, cpu: &mut CPU, addr: u16) {
     cpu.pc = cpu.read_wide(addr, ctx) - 3;
 }
 
-fn NOP(_: &Context, _: &mut CPU) {}
-fn DOP_imm(_: &Context, _: &mut CPU, _: u8) {}
-fn DOP(_: &Context, _: &mut CPU, _: u16) {}
-fn TOP_addr(_: &Context, _: &mut CPU, _: u16) {}
+fn NOP(_: &mut CpuContext, _: &mut CPU) {}
+fn DOP_imm(_: &mut CpuContext, _: &mut CPU, _: u8) {}
+fn DOP(_: &mut CpuContext, _: &mut CPU, _: u16) {}
+fn TOP_addr(_: &mut CpuContext, _: &mut CPU, _: u16) {}
 
 inst_list! {
     { BRK 0x00 &NOP }

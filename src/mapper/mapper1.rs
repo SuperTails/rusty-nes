@@ -1,6 +1,7 @@
-use super::{Mapped, MapperResult, MirrorMode};
-use crate::mem_location::{MemLocation, RomLocation};
-use crate::Context;
+use super::{MapperResult, CpuMapper};
+use crate::mem_location::{RomLocation, MemLocation};
+use crate::context::CpuContext;
+use rust_2c02::{PpuMapper, MirrorMode};
 use num_derive::FromPrimitive;
 use num_traits::cast::FromPrimitive;
 use std::cell::RefCell;
@@ -152,16 +153,70 @@ impl Mapper1 {
             }),
         }
     }
+
+    fn mem_cpu<'a>(&'a mut self, addr: u16, context: &'a mut CpuContext) -> MapperResult<'a> {
+        match addr {
+            0x4020..=0x7FFF => {
+                if self.data.borrow().ram_enable {
+                    println!("RAM is disabled");
+                    RomLocation { mem: 0 }.into()
+                } else {
+                    let relative = (addr - 0x4000) as usize % self.prg_ram.borrow().len();
+                    //println!("Reading RAM at {:#X} = {:#X}", relative, self.prg_ram.borrow()[relative]);
+                    Mapper1Location::Ram((&self.prg_ram, relative)).into()
+                }
+            }
+            0x8000..=0xFFFF => Mapper1Location::Mmio((self, addr as usize, context)).into(),
+            _ => panic!(),
+        }
+    }
+
+    fn mem_ppu(&mut self, addr: u16) -> MapperResult {
+        if addr >= 0x2000 {
+            panic!();
+        }
+
+        let data = self.data.borrow();
+
+        let (chr, addr) = match data.chr_mode {
+            ChrMode::Individual => {
+                // Switch 1KiB banks at the first and second KiB of PPU memory space
+                let bank_select = if (0x0000..=0x0FFF).contains(&addr) {
+                    data.chr_bank_0
+                } else {
+                    data.chr_bank_1
+                };
+
+                let bank_start = 0x1000 * (bank_select as usize);
+                (&self.chr, (addr % 0x1000) as usize + bank_start)
+            }
+            ChrMode::DoubleSize => {
+                let bank_select = data.chr_bank_0 >> 1;
+
+                let bank_start = 0x2000 * (bank_select as usize);
+
+                (&self.chr, addr as usize + bank_start)
+            }
+        };
+
+        if self.chr_is_rom {
+            let chr = chr.borrow();
+            let mem = chr[addr % chr.len()];
+            RomLocation { mem }.into()
+        } else {
+            Mapper1Location::Ram((chr, addr)).into()
+        }
+    }
 }
 
 // TODO: Use mirror mode
 pub enum Mapper1Location<'a> {
     Ram((&'a RefCell<Vec<u8>>, usize)),
-    Mmio((&'a Mapper1, usize, &'a Context)),
+    Mmio((&'a Mapper1, usize, &'a CpuContext)),
 }
 
 impl<'a> Mapper1Location<'a> {
-    // PRG ROM is mapped in CPU space from $8000 to $FFFF
+    // PRG ROM is Mapper in CPU space from $8000 to $FFFF
     fn get_prg_rom(mode: PrgRomMode, addr: usize, prg_bank: u8, prg_rom: &[u8]) -> u8 {
         match mode {
             PrgRomMode::DoubleSize => {
@@ -208,7 +263,7 @@ impl<'a> Mapper1Location<'a> {
     }
 }
 
-impl<'a> MemLocation<'a> for Mapper1Location<'a> {
+impl<'a> MemLocation for Mapper1Location<'a> {
     fn read(&mut self) -> u8 {
         match self {
             Mapper1Location::Ram((t, addr)) => t.borrow()[*addr as usize],
@@ -272,59 +327,25 @@ impl<'a> MemLocation<'a> for Mapper1Location<'a> {
     }
 }
 
-impl Mapped for Mapper1 {
-    fn mem_cpu<'a>(&'a self, addr: u16, context: &'a Context) -> MapperResult<'a> {
-        match addr {
-            0x4020..=0x7FFF => {
-                if self.data.borrow().ram_enable {
-                    println!("RAM is disabled");
-                    RomLocation { mem: 0 }.into()
-                } else {
-                    let relative = (addr - 0x4000) as usize % self.prg_ram.borrow().len();
-                    //println!("Reading RAM at {:#X} = {:#X}", relative, self.prg_ram.borrow()[relative]);
-                    Mapper1Location::Ram((&self.prg_ram, relative)).into()
-                }
-            }
-            0x8000..=0xFFFF => Mapper1Location::Mmio((self, addr as usize, context)).into(),
-            _ => panic!(),
-        }
+impl CpuMapper for Mapper1 {
+    type Context = CpuContext;
+
+    fn read_mem_cpu(&mut self, addr: u16, context: &mut Self::Context) -> u8 {
+        self.mem_cpu(addr, context).read()
     }
 
-    fn mem_ppu(&self, addr: u16) -> MapperResult {
-        if addr >= 0x2000 {
-            panic!();
-        }
+    fn write_mem_cpu(&mut self, addr: u16, value: u8, context: &mut Self::Context) {
+        self.mem_cpu(addr, context).write(value)
+    }
+}
 
-        let data = self.data.borrow();
+impl PpuMapper for Mapper1 {
+    fn read_mem_ppu(&mut self, addr: u16) -> u8 {
+        self.mem_ppu(addr).read()
+    }
 
-        let (chr, addr) = match data.chr_mode {
-            ChrMode::Individual => {
-                // Switch 1KiB banks at the first and second KiB of PPU memory space
-                let bank_select = if (0x0000..=0x0FFF).contains(&addr) {
-                    data.chr_bank_0
-                } else {
-                    data.chr_bank_1
-                };
-
-                let bank_start = 0x1000 * (bank_select as usize);
-                (&self.chr, (addr % 0x1000) as usize + bank_start)
-            }
-            ChrMode::DoubleSize => {
-                let bank_select = data.chr_bank_0 >> 1;
-
-                let bank_start = 0x2000 * (bank_select as usize);
-
-                (&self.chr, addr as usize + bank_start)
-            }
-        };
-
-        if self.chr_is_rom {
-            let chr = chr.borrow();
-            let mem = chr[addr % chr.len()];
-            RomLocation { mem }.into()
-        } else {
-            Mapper1Location::Ram((chr, addr)).into()
-        }
+    fn write_mem_ppu(&mut self, addr: u16, value: u8) {
+        self.mem_ppu(addr).write(value)
     }
 
     // TODO: The one-screen modes

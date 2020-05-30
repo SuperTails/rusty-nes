@@ -1,5 +1,5 @@
 use crate::cpu::CPU;
-use crate::Context;
+use crate::context::CpuContext;
 use bitfield::bitfield;
 
 const RATES: [usize; 0x10] = [
@@ -57,7 +57,7 @@ impl DMC {
         self.level
     }
 
-    pub fn on_apu_cycle(&mut self, cpu: &CPU, context: &Context) {
+    pub fn on_apu_cycle(&mut self, cpu: &mut CPU, context: &mut CpuContext) {
         let period = RATES[self.ctrl.rate() as usize] / 2;
 
         if self.timer > 0 {

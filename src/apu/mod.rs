@@ -1,5 +1,5 @@
 use crate::cpu::CPU;
-use crate::Context;
+use crate::context::CpuContext;
 use sdl2::audio::AudioCallback;
 use std::sync::{Arc, Mutex};
 
@@ -159,7 +159,7 @@ impl APU {
     }
 
     // TODO: Delay in settings changing
-    pub fn next(&mut self, cpu_cycles: usize, context: &Context, cpu: &CPU) {
+    pub fn next(&mut self, cpu_cycles: usize, context: &mut CpuContext, cpu: &mut CPU) {
         for _ in 0..cpu_cycles {
             self.cycle += 1;
             if self.step_mode {

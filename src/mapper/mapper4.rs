@@ -1,7 +1,7 @@
-use super::{Mapped, MapperResult, MirrorMode};
-use crate::mem_location::{MemLocation, RamLocation, RomLocation};
-use crate::Context;
-use std::cell::RefCell;
+use super::{CpuMapper, MapperResult};
+use crate::mem_location::{RamLocation, RomLocation, MemLocation};
+use crate::context::CpuContext;
+use rust_2c02::{PpuMapper, MirrorMode};
 
 /* From the nesdev wiki (https://wiki.nesdev.com/w/index.php/MMC3):
  *
@@ -24,11 +24,66 @@ use std::cell::RefCell;
 
 // TODO: IRQ
 pub struct Mapper4 {
-    prg_ram: RefCell<Vec<u8>>, // Optional
+    prg_ram: Vec<u8>, // Optional
     prg_rom: Vec<u8>,          // 16KiB or 32KiB, not bankswitched
-    chr: RefCell<Vec<u8>>,     // Up to 2048KiB, bank size 8KiB
+    chr: Vec<u8>,     // Up to 2048KiB, bank size 8KiB
 
-    data: RefCell<Mapper4Data>,
+    data: Mapper4Data,
+}
+
+impl Mapper4 {
+    fn mem_cpu<'a>(&'a mut self, addr: u16, _: &'a mut <Self as CpuMapper>::Context) -> MapperResult<'a> {
+        match addr {
+            0x4020..=0x7FFF => {
+                if self.data.deny_writes {
+                    RomLocation {
+                        mem: self.prg_ram[addr as usize % 0x2000],
+                    }
+                    .into()
+                } else {
+                    RamLocation {
+                        mem: &mut self.prg_ram,
+                        addr: (addr % 0x2000),
+                    }
+                    .into()
+                }
+            }
+            0x8000..=0xFFFF => Mapper4Location::CPU({
+                let relative = (addr % 0x2000) as usize;
+                let bank_select = {
+                    let bank_count = self.prg_rom.len() / 0x2000;
+                    let bank_select = self.data.cpu_bank(addr);
+                    if bank_select == -1 {
+                        bank_count - 1
+                    } else if bank_select == -2 {
+                        bank_count - 2
+                    } else {
+                        bank_select as usize % bank_count
+                    }
+                };
+                let bank = &self.prg_rom[(bank_select * 0x2000)..((bank_select + 1) * 0x2000)];
+                (&mut self.data, addr, bank[relative])
+            })
+            .into(),
+            _ => panic!(),
+        }
+    }
+
+    fn mem_ppu(&mut self, mut addr: u16) -> MapperResult {
+        match addr {
+            0x0000..=0x1FFF => {
+                let (reg, double) = self.data.ppu_bank_register(addr);
+                addr &= if double { 0x7FF } else { 0x3FF };
+
+                let mapper_addr =
+                    (reg as usize * 0x400 + addr as usize) & (self.chr.len() - 1);
+                Mapper4Location::PPU((&mut self.chr, mapper_addr)).into()
+            }
+            _ => panic!(),
+        }
+    }
+
+
 }
 
 #[derive(Default)]
@@ -185,92 +240,59 @@ impl Mapper4 {
 
         Mapper4 {
             prg_rom,
-            chr: RefCell::new(chr),
-            prg_ram: RefCell::new(vec![0; prg_ram_len]),
-            data: RefCell::new(Mapper4Data::new()),
+            chr,
+            prg_ram: vec![0; prg_ram_len],
+            data: Mapper4Data::new(),
         }
     }
 }
 
 pub enum Mapper4Location<'a> {
-    CPU((&'a RefCell<Mapper4Data>, u16, u8)),
-    PPU((&'a RefCell<Vec<u8>>, usize)),
+    CPU((&'a mut Mapper4Data, u16, u8)),
+    PPU((&'a mut Vec<u8>, usize)),
 }
 
-impl<'a> MemLocation<'a> for Mapper4Location<'a> {
+impl<'a> MemLocation for Mapper4Location<'a> {
     fn read(&mut self) -> u8 {
         match self {
             Mapper4Location::CPU((_, _, d)) => *d,
-            Mapper4Location::PPU((d, addr)) => d.borrow()[*addr as usize],
+            Mapper4Location::PPU((d, addr)) => d[*addr as usize],
         }
     }
 
     fn write(&mut self, value: u8) {
         match self {
             Mapper4Location::CPU((data, addr, _)) => {
-                data.borrow_mut().write_register(*addr, value);
+                data.write_register(*addr, value);
             }
             Mapper4Location::PPU((d, addr)) => {
-                d.borrow_mut()[*addr as usize] = value;
+                d[*addr as usize] = value;
             }
         }
     }
 }
 
-impl Mapped for Mapper4 {
-    fn mem_cpu<'a>(&'a self, addr: u16, _: &'a Context) -> MapperResult<'a> {
-        match addr {
-            0x4020..=0x7FFF => {
-                if self.data.borrow().deny_writes {
-                    RomLocation {
-                        mem: self.prg_ram.borrow()[addr as usize % 0x2000],
-                    }
-                    .into()
-                } else {
-                    RamLocation {
-                        mem: &self.prg_ram,
-                        addr: (addr % 0x2000),
-                    }
-                    .into()
-                }
-            }
-            0x8000..=0xFFFF => Mapper4Location::CPU({
-                let relative = (addr % 0x2000) as usize;
-                let bank_select = {
-                    let bank_count = self.prg_rom.len() / 0x2000;
-                    let bank_select = self.data.borrow().cpu_bank(addr);
-                    if bank_select == -1 {
-                        bank_count - 1
-                    } else if bank_select == -2 {
-                        bank_count - 2
-                    } else {
-                        bank_select as usize % bank_count
-                    }
-                };
-                let bank = &self.prg_rom[(bank_select * 0x2000)..((bank_select + 1) * 0x2000)];
-                (&self.data, addr, bank[relative])
-            })
-            .into(),
-            _ => panic!(),
-        }
+impl CpuMapper for Mapper4 {
+    type Context = CpuContext;
+
+    fn read_mem_cpu(&mut self, addr: u16, context: &mut Self::Context) -> u8 {
+        self.mem_cpu(addr, context).read()
     }
+    fn write_mem_cpu(&mut self, addr: u16, value: u8, context: &mut Self::Context) {
+        self.mem_cpu(addr, context).write(value)
+    }
+}
 
-    fn mem_ppu(&self, mut addr: u16) -> MapperResult {
-        match addr {
-            0x0000..=0x1FFF => {
-                let (reg, double) = self.data.borrow().ppu_bank_register(addr);
-                addr &= if double { 0x7FF } else { 0x3FF };
-
-                let mapped_addr =
-                    (reg as usize * 0x400 + addr as usize) & (self.chr.borrow().len() - 1);
-                Mapper4Location::PPU((&self.chr, mapped_addr)).into()
-            }
-            _ => panic!(),
-        }
+impl PpuMapper for Mapper4 {
+    fn read_mem_ppu(&mut self, addr: u16) -> u8 {
+        self.mem_ppu(addr).read()
+    }
+    fn write_mem_ppu(&mut self, addr: u16, value: u8) {
+        self.mem_ppu(addr).write(value)
     }
 
     fn mirror_mode(&self) -> MirrorMode {
-        if self.data.borrow().horizontal_mirroring {
+        if self.data.horizontal_mirroring {
             MirrorMode::Horizontal
         } else {
             MirrorMode::Vertical

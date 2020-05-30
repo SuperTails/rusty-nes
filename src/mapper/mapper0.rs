@@ -1,6 +1,6 @@
-use super::{Mapped, MapperResult, MirrorMode};
-use crate::mem_location::{MemLocation, RamLocation, RomLocation};
-use crate::Context;
+use crate::context::CpuContext;
+use super::CpuMapper;
+use rust_2c02::{PpuMapper, MirrorMode};
 use std::cell::RefCell;
 
 /*
@@ -37,38 +37,40 @@ impl Mapper0 {
     }
 }
 
-pub struct Mapper0Ram<'a>(&'a RefCell<Vec<u8>>, u16);
+impl CpuMapper for Mapper0 {
+    type Context = CpuContext;
 
-impl<'a> MemLocation<'a> for Mapper0Ram<'_> {
-    fn read(&mut self) -> u8 {
-        self.0.borrow()[self.1 as usize]
-    }
-
-    fn write(&mut self, value: u8) {
-        self.0.borrow_mut()[self.1 as usize] = value;
-    }
-}
-
-impl Mapped for Mapper0 {
-    fn mem_cpu<'a>(&'a self, addr: u16, _: &'a Context) -> MapperResult<'a> {
+    fn read_mem_cpu(&mut self, addr: u16, _: &mut Self::Context) -> u8 {
         let prg_rom_len = self.prg_rom.len();
         match addr {
-            0x4020..=0x7FFF => Mapper0Ram(&self.prg_ram, (addr - 0x4000) % 0x800).into(),
-            0x8000..=0xFFFF => RomLocation {
-                mem: self.prg_rom[(addr - 0x8000) as usize % prg_rom_len],
-            }
-            .into(),
+            // RAM for Mapper 0
+            0x4020..=0x7FFF => self.prg_ram.borrow()[((addr - 0x4000) % 0x800) as usize],
+            // ROM for Mapper 0
+            0x8000..=0xFFFF => self.prg_rom[(addr - 0x8000) as usize % prg_rom_len],
             _ => panic!("CPU access to memory not in cart at {:#06X}", addr),
         }
     }
 
-    fn mem_ppu(&self, addr: u16) -> MapperResult {
+    fn write_mem_cpu(&mut self, addr: u16, value: u8, _: &mut Self::Context) {
         match addr {
-            0x0000..=0x1FFF => RamLocation {
-                addr,
-                mem: &self.chr_rom,
-            }
-            .into(),
+            0x4020..=0x7FFF => self.prg_ram.borrow_mut()[((addr - 0x4000) % 0x800) as usize] = value,
+            0x8000..=0xFFFF => eprintln!("Ignoring ROM write at {:06X}", addr),
+            _ => panic!("CPU access to memory not in cart at {:#06X}", addr),
+        }
+    }
+}
+
+impl PpuMapper for Mapper0 {
+    fn read_mem_ppu(&mut self, addr: u16) -> u8 {
+        match addr {
+            0x0000..=0x1FFF => self.chr_rom.borrow()[addr as usize],
+            _ => panic!("PPU access to memory not in cart at {:#06X}", addr),
+        }
+    }
+
+    fn write_mem_ppu(&mut self, addr: u16, value: u8) {
+        match addr {
+            0x0000..=0x1FFF => self.chr_rom.borrow_mut()[addr as usize] = value,
             _ => panic!("PPU access to memory not in cart at {:#06X}", addr),
         }
     }

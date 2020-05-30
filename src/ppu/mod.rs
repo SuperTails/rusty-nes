@@ -237,7 +237,7 @@ impl PPU {
         PalettedColor(((hi_color >> column) & 1) << 1 | ((lo_color >> column) & 1))
     }
 
-    fn color_pattern_mapped(
+    fn color_pattern_Mapper(
         &self,
         base_addr: u16,
         row: u8,
@@ -637,7 +637,7 @@ impl PPU {
 
         let base_addr = pattern_table + 16 * tile_name as u16;
 
-        let color = self.color_pattern_mapped(base_addr, (y % 8) as u8, (x % 8) as u8, context);
+        let color = self.color_pattern_Mapper(base_addr, (y % 8) as u8, (x % 8) as u8, context);
 
         let c = self.get_color(color, palette_idx, false);
 

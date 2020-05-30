@@ -1,6 +1,6 @@
 pub mod instruction;
 
-use super::Context;
+use crate::context::CpuContext;
 use instruction::Instruction;
 
 pub enum State {
@@ -45,7 +45,7 @@ impl CPU {
         (self.status >> b) & 1 != 0
     }
 
-    pub fn read(&self, addr: u16, context: &Context) -> u8 {
+    pub fn read(&self, addr: u16, context: &mut CpuContext) -> u8 {
         if addr < 0x2000 {
             self.ram[(addr % 0x800) as usize]
         } else {
@@ -53,7 +53,7 @@ impl CPU {
         }
     }
 
-    pub fn write(&mut self, addr: u16, value: u8, context: &Context) {
+    pub fn write(&mut self, addr: u16, value: u8, context: &mut CpuContext) {
         if addr < 0x2000 {
             self.ram[(addr % 0x800) as usize] = value;
         } else {
@@ -109,11 +109,11 @@ impl CPU {
         self.get_status(1)
     }
 
-    pub fn read_wide_nowrap(&self, addr: u16, ctx: &Context) -> u16 {
+    pub fn read_wide_nowrap(&self, addr: u16, ctx: &mut CpuContext) -> u16 {
         (self.read(addr + 1, ctx) as u16) << 8 | self.read(addr, ctx) as u16
     }
 
-    pub fn read_wide(&self, addr: u16, ctx: &Context) -> u16 {
+    pub fn read_wide(&self, addr: u16, ctx: &mut CpuContext) -> u16 {
         let page = addr & 0xFF00;
         let idx = (addr as u8).wrapping_add(1) as u16;
         let addr_next = page | idx;
@@ -136,7 +136,7 @@ impl CPU {
         self.set_zero(value == 0);
     }
 
-    pub fn trigger_nmi(&mut self, ctx: &Context) {
+    pub fn trigger_nmi(&mut self, ctx: &mut CpuContext) {
         self.push((self.pc >> 8) as u8);
         self.push((self.pc & 0xFF) as u8);
         self.push(self.status | 0b10 << 4);
@@ -150,7 +150,7 @@ impl CPU {
         //println!("NMI triggered, PC is now {:#06X} ({:#04X})", self.pc, self.read(self.pc, ctx));
     }
 
-    pub fn try_irq(&mut self, ctx: &Context) -> bool {
+    pub fn try_irq(&mut self, ctx: &mut CpuContext) -> bool {
         if self.get_interrupt() {
             return false;
         }
@@ -175,7 +175,7 @@ impl CPU {
         }
     }
 
-    pub fn print_instr(&mut self, instr: &Instruction, ctx: &Context) {
+    pub fn print_instr(&mut self, instr: &Instruction, ctx: &mut CpuContext) {
         print!(
             "[PC: {:#06X}] A:{:02X} X:{:02X} Y:{:02X} P:{:02X} SP:{:02X} {} {: >4?}:",
             self.pc, self.acc, self.x, self.y, self.status, self.sp, instr.opcode, instr.mode
@@ -186,7 +186,7 @@ impl CPU {
         println!();
     }
 
-    pub fn next(&mut self, ctx: &Context) -> usize {
+    pub fn next(&mut self, ctx: &mut CpuContext) -> usize {
         match self.state {
             State::Reset => {
                 self.pc =
@@ -212,6 +212,18 @@ impl CPU {
                 }
             }
         }
+    }
+}
+
+impl rust_2c02::Cpu for CPU {
+    type Context = CpuContext;
+
+    fn pause(&mut self, cycles: usize, context: &mut Self::Context) {
+        context.cpu_pause = cycles;
+    }
+
+    fn read(&mut self, addr: u16, context: &mut Self::Context) -> u8 {
+        CPU::read(self, addr, context)
     }
 }
 
