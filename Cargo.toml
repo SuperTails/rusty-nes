@@ -15,7 +15,7 @@ lazy_static = "1.4.0"
 rust_2c02 = { path = "../Rust/rust_2c02", features = ["std"] }
 
 [dependencies.sdl2]
-version = "*"
+version = "0.34"
 default-features = false
 features = ["gfx"]
 

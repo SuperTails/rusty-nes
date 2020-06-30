@@ -8,6 +8,11 @@ pub enum State {
     Irq,
     Nmi,
     Run,
+    Dma {
+        started: bool,
+        addr_high: u8,
+        addr_low: u8,
+    },
 }
 
 pub struct CPU {
@@ -19,6 +24,7 @@ pub struct CPU {
     pub sp: u8,
     pub ram: [u8; 0x800],
     pub state: State,
+    pub cycle: u64,
 }
 
 impl CPU {
@@ -32,6 +38,7 @@ impl CPU {
             sp: 0,
             ram: [0; 0x800],
             state: State::Reset,
+            cycle: 0,
         }
     }
 
@@ -56,6 +63,8 @@ impl CPU {
     pub fn write(&mut self, addr: u16, value: u8, context: &mut CpuContext) {
         if addr < 0x2000 {
             self.ram[(addr % 0x800) as usize] = value;
+        } else if addr == 0x4014 {
+            self.state = State::Dma { started: false, addr_high: value, addr_low: 0 };
         } else {
             context.write(addr, value);
         }
@@ -147,6 +156,8 @@ impl CPU {
         self.pc = (self.read(0xFFFB, ctx) as u16) << 8 | self.read(0xFFFA, ctx) as u16;
         self.state = State::Nmi;
 
+        self.cycle += 7;
+
         //println!("NMI triggered, PC is now {:#06X} ({:#04X})", self.pc, self.read(self.pc, ctx));
     }
 
@@ -187,6 +198,12 @@ impl CPU {
     }
 
     pub fn next(&mut self, ctx: &mut CpuContext) -> usize {
+        let cycles_taken = self.next_inner(ctx);
+        self.cycle += cycles_taken as u64;
+        cycles_taken
+    }
+
+    fn next_inner(&mut self, ctx: &mut CpuContext) -> usize {
         match self.state {
             State::Reset => {
                 self.pc =
@@ -194,6 +211,32 @@ impl CPU {
                 println!("Reset vector was {:#06X}", self.pc);
                 self.state = State::Run;
                 1
+            }
+            State::Dma { started, addr_high, addr_low } => {
+                if !started && self.cycle % 2 == 0 {
+                    // We need to delay one cycle if we start on an even cycle
+                    return 1;
+                }
+
+                if let State::Dma { started, .. } = &mut self.state {
+                    *started = true;
+                }
+
+                let addr = ((addr_high as u16) << 8) | addr_low as u16;
+                let data = self.read(addr, ctx);
+
+                ctx.ppu.write_from_bus(rust_2c02::PPURegInt::Oamdata, data, &mut *ctx.ppu_mapper.borrow_mut());
+
+                if let Some(next_addr_low) = addr_low.checked_add(1) {
+                    if let State::Dma { addr_low, .. } = &mut self.state {
+                        *addr_low = next_addr_low;
+                    }
+                } else {
+                    // We've gone through the whole 256-byte range, return to normal
+                    self.state = State::Run;
+                }
+
+                2
             }
             State::Irq | State::Nmi | State::Run => {
                 let id = self.read(self.pc, ctx);
@@ -212,18 +255,6 @@ impl CPU {
                 }
             }
         }
-    }
-}
-
-impl rust_2c02::Cpu for CPU {
-    type Context = CpuContext;
-
-    fn pause(&mut self, cycles: usize, context: &mut Self::Context) {
-        context.cpu_pause = cycles;
-    }
-
-    fn read(&mut self, addr: u16, context: &mut Self::Context) -> u8 {
-        CPU::read(self, addr, context)
     }
 }
 

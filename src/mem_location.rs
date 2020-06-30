@@ -1,8 +1,7 @@
 use crate::apu::APU;
 use crate::controller::Controller;
 use crate::cpu::CPU;
-use rust_2c02::{PPU, nametable::NAMETABLE_SIZE, PpuMapper};
-use num_derive::FromPrimitive;
+use rust_2c02::{PPU, PPURegInt, nametable::NAMETABLE_SIZE, PpuMapper};
 use std::cell::RefCell;
 use std::num::Wrapping;
 
@@ -95,19 +94,7 @@ pub struct PPURegister<'a> {
     pub mapper: &'a mut dyn PpuMapper,
 }
 
-#[derive(FromPrimitive)]
-pub enum PPURegInt {
-    Ctrl = 0,
-    Mask,
-    Status,
-    Oamaddr,
-    Oamdata,
-    Scroll,
-    Addr,
-    Data = 7,
-    Dma = 14,
-}
-
+// FIXME: This should just use write_from_bus/read_from_bus built-in to rust_2c02
 impl<'a> MemLocation for PPURegister<'a> {
     fn read(&mut self) -> u8 {
         let result = match self.reg {
@@ -136,7 +123,6 @@ impl<'a> MemLocation for PPURegister<'a> {
                 self.ppu.incr_address();
                 result
             }
-            PPURegInt::Dma => unimplemented!(),
         };
 
         self.ppu.last_value = result;
@@ -199,9 +185,6 @@ impl<'a> MemLocation for PPURegister<'a> {
                 }
 
                 self.ppu.write_second = !self.ppu.write_second;
-            }
-            PPURegInt::Dma => {
-                self.ppu.dma_request = Some(value);
             }
             PPURegInt::Data => {
                 let addr = self.ppu.address();

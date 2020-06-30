@@ -103,7 +103,7 @@ mod test {
             if ctx.inner.cycle == 27403 || ctx.inner.cycle == 57183 {
                 ctx.cpu.acc = 128;
                 ctx.cpu.status = 164;
-                ctx.inner.ppu.as_mut().unwrap().status &= !0x80;
+                ctx.inner.ppu.status &= !0x80;
             }
 
             {
@@ -119,8 +119,8 @@ mod test {
                 if cpu.read(cpu.pc - 1, &mut ctx.inner) == 0x20
                     && cpu.read(cpu.pc - 2, &mut ctx.inner) == 0x02
                     && cpu.read(cpu.pc - 3, &mut ctx.inner) == 0xAD
-                    && (1..=12).contains(&ctx.inner.ppu.as_mut().unwrap().pixel())
-                    && ctx.inner.ppu.as_mut().unwrap().scanline() == 261
+                    && (1..=12).contains(&ctx.inner.ppu.pixel())
+                    && ctx.inner.ppu.scanline() == 261
                 {
                     cpu.acc &= !64;
                     let acc = cpu.acc;
@@ -138,7 +138,7 @@ mod test {
 
             let actual = {
                 let cpu = &ctx.cpu;
-                let ppu = ctx.inner.ppu.as_mut().unwrap();
+                let ppu = &ctx.inner.ppu;
                 (
                     cpu.pc,
                     cpu.acc,
@@ -151,7 +151,7 @@ mod test {
                     ppu.scanline(),
                 )
             };
-            assert_eq!(expected, &actual, "Frame: {:?}", ctx.inner.ppu.as_mut().unwrap().frame());
+            assert_eq!(expected, &actual, "Frame: {:?}", ctx.inner.ppu.frame());
 
             while !ctx.advance() {}
         }

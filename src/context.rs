@@ -6,16 +6,19 @@ use crate::mapper::{CpuMapper, Mapper0, Mapper1, Mapper3, Mapper4};
 use crate::mem_location::*;
 use crate::rom::Rom;
 use crate::sdl_system::SDLSystem;
-use rust_2c02::{PpuMapper, Display, PPU};
-use num_traits::FromPrimitive;
+use rust_2c02::{PpuMapper, Display, PPU, PPURegInt};
 use sdl2::audio::AudioSpecDesired;
 use sdl2::event::Event;
 use sdl2::keyboard::Keycode;
 use sdl2::surface::Surface;
+use sdl2::render::Canvas;
+use sdl2::rect::Rect;
+use std::time::Instant;
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::io::Write;
 use std::rc::Rc;
+use std::convert::TryFrom;
 
 macro_rules! getter_body {
     ($self:expr, $addr:expr, $mapperfunc:ident, $func:ident, $($arg:expr)?) => {
@@ -23,9 +26,9 @@ macro_rules! getter_body {
             0x0000..=0x1FFF => panic!(),
             0x2000..=0x3FFF => {
                 PPURegister {
-                    ppu: $self.ppu.as_mut().unwrap(),
-                    reg: PPURegInt::from_usize((($addr - 0x2000) % 0x8) as usize).unwrap(),
-                    mapper: &mut *$self.ppu_mapper.as_ref().unwrap().borrow_mut(),
+                    ppu: &mut $self.ppu/*.as_mut().unwrap()*/,
+                    reg: PPURegInt::try_from((($addr - 0x2000) % 0x8) as u8).unwrap(),
+                    mapper: &mut *$self.ppu_mapper.borrow_mut(),
                 }
             }
             .$func($($arg)?),
@@ -34,14 +37,7 @@ macro_rules! getter_body {
                 register: ($addr - 0x4000) as usize,
             }
             .$func($($arg)?),
-            0x4014..=0x4014 => {
-                PPURegister {
-                    ppu: $self.ppu.as_mut().unwrap(),
-                    reg: PPURegInt::from_u8(14).unwrap(),
-                    mapper: &mut *$self.ppu_mapper.as_ref().unwrap().borrow_mut(),
-                }
-            }
-            .$func($($arg)?),
+            0x4014..=0x4014 => panic!(),
             0x4015..=0x4015 => APURegister {
                 apu: $self.apu.as_mut().unwrap(),
                 register: 0x15,
@@ -75,21 +71,42 @@ macro_rules! getter_body {
 
 pub struct SdlDisplay<'a> {
     sdl_system: &'a mut SDLSystem,
-    surface: &'a mut Surface<'static>,
+    surface: &'a mut Canvas<Surface<'static>>,
 }
 
 impl Display for SdlDisplay<'_> {
     fn set_pixel(&mut self, x: i32, y: i32, rgb: (u8, u8, u8)) {
-        self.surface.fill_rect(sdl2::rect::Rect::new(x * 2, y * 2, 2, 2), rgb.into()).unwrap();
+        /*let surface = self.surface.surface_mut();
+
+        let x = if 0 <= x && (x as u32) < surface.width() {
+            x as usize
+        } else {
+            return
+        };
+
+        let y = if 0 <= y && (y as u32) < surface.height() {
+            y as usize
+        } else {
+            return
+        };
+
+        let pitch = surface.pitch() as usize;
+        let pixels = surface.without_lock_mut().unwrap();
+        pixels[y * pitch + x * 4] = rgb.0;
+        pixels[y * pitch + x * 4 + 1] = rgb.1;
+        pixels[y * pitch + x * 4 + 2] = rgb.2;*/
+
+        self.surface.surface_mut().fill_rect(Rect::new(x, y, 1, 1), rgb.into()).unwrap();
     }
 
     fn draw_rect(&mut self, x: i32, y: i32, w: u32, h: u32, rgb: (u8, u8, u8)) {
-        self.surface.fill_rect(sdl2::rect::Rect::new(x * 2, y * 2, w * 2, h * 2), rgb.into()).unwrap();
+        self.surface.set_draw_color(rgb);
+        self.surface.draw_rect(sdl2::rect::Rect::new(x, y, w, h)).unwrap();
     }
     
     fn commit(&mut self) {
         let creator = self.sdl_system.canvas.texture_creator();
-        let texture = creator.create_texture_from_surface(&self.surface).unwrap();
+        let texture = creator.create_texture_from_surface(self.surface.surface()).unwrap();
         let w = texture.query().width;
         let h = texture.query().height;
         self.sdl_system.canvas.copy(&texture, None, sdl2::rect::Rect::new(0, 0, w, h)).unwrap();
@@ -98,12 +115,11 @@ impl Display for SdlDisplay<'_> {
 }
 
 pub struct CpuContext {
-    pub ppu_mapper: Option<Rc<RefCell<dyn PpuMapper>>>,
+    pub ppu_mapper: Rc<RefCell<dyn PpuMapper>>,
     pub cpu_mapper: Option<Rc<RefCell<dyn CpuMapper<Context=CpuContext>>>>,
-    pub ppu: Option<PPU>,
+    pub ppu: PPU,
     pub apu: Option<APU>,
     pub controller: Controller,
-    pub cpu_pause: usize,
     pub cycle: usize,
 }
 
@@ -122,8 +138,10 @@ pub struct Context {
     pub inner: CpuContext,
     pub hit_breakpoint: bool,
     pub sdl_system: RefCell<SDLSystem>,
-    pub surface: Surface<'static>,
+    pub surface: Canvas<Surface<'static>>,
     controller_poll_timer: usize,
+    pub prev_ppu_frame: usize,
+    pub times: Vec<Instant>,
 }
 
 type CpuMapperPart<C> = Rc<RefCell<dyn CpuMapper<Context = C>>>;
@@ -200,17 +218,18 @@ impl Context {
             hit_breakpoint: false,
             cpu: CPU::new(),
             sdl_system: RefCell::new(sdl_system),
-            surface: Surface::new(1024, 512, sdl2::pixels::PixelFormatEnum::RGBA32).unwrap(),
+            surface: Surface::new(1024, 512, sdl2::pixels::PixelFormatEnum::RGBA32).unwrap().into_canvas().unwrap(),
             inner: CpuContext {
-                ppu: Some(PPU::new()),
+                ppu: PPU::new(),
+                ppu_mapper,
                 apu: Some(apu),
                 cpu_mapper: Some(cpu_mapper),
-                ppu_mapper: Some(ppu_mapper),
                 controller: Controller::new(),
-                cpu_pause: 0,
                 cycle: 0,
             },
             controller_poll_timer: CONTROLLER_POLL_INTERVAL,
+            prev_ppu_frame: 0,
+            times: Vec::new(),
         }
     }
 
@@ -275,22 +294,6 @@ impl Context {
         }
 
         if !self.hit_breakpoint || should_run {
-            if self.inner.cpu_pause != 0 {
-
-                let mut apu = self.inner.apu.take().unwrap();
-                apu.next(self.inner.cpu_pause, &mut self.inner, &mut self.cpu);
-                self.inner.apu.replace(apu);
-
-                let mut ppu = self.inner.ppu.take().unwrap();
-                let ppu_mapper = self.inner.ppu_mapper.take().unwrap();
-                ppu.next(self.inner.cpu_pause, &mut *ppu_mapper.borrow_mut(), &mut SdlDisplay { sdl_system: &mut self.sdl_system.borrow_mut(), surface: &mut self.surface }, &mut self.cpu, &mut self.inner);
-                self.inner.ppu.replace(ppu);
-                self.inner.ppu_mapper.replace(ppu_mapper);
-
-                self.inner.cycle += self.inner.cpu_pause;
-                self.inner.cpu_pause = 0;
-            }
-
             //let instr = cpu::instruction::ARCH[self.cpu.borrow().read(self.cpu.borrow().pc, self) as usize].as_ref().unwrap();
 
             let cycles = self.cpu.next(&mut self.inner);
@@ -302,11 +305,23 @@ impl Context {
             apu.next(cycles as usize, &mut self.inner, &mut self.cpu);
             self.inner.apu.replace(apu);
 
-            let mut ppu = self.inner.ppu.take().unwrap();
-            let ppu_mapper = self.inner.ppu_mapper.take().unwrap();
-            ppu.next(cycles as usize, &mut *ppu_mapper.borrow_mut(), &mut SdlDisplay { sdl_system: &mut self.sdl_system.borrow_mut(), surface: &mut self.surface }, &mut self.cpu, &mut self.inner);
-            self.inner.ppu.replace(ppu);
-            self.inner.ppu_mapper.replace(ppu_mapper);
+            self.inner.ppu.next(cycles as usize, &mut *self.inner.ppu_mapper.borrow_mut(), &mut SdlDisplay { sdl_system: &mut self.sdl_system.borrow_mut(), surface: &mut self.surface });
+
+            if self.inner.ppu.frame() != self.prev_ppu_frame {
+                self.prev_ppu_frame = self.inner.ppu.frame();
+                self.inner.ppu.debug_render(&mut *self.inner.ppu_mapper.borrow_mut(), &mut SdlDisplay { sdl_system: &mut self.sdl_system.borrow_mut(), surface: &mut self.surface });
+
+                if self.times.len() == 10 {
+                    self.times.remove(0);
+                }
+
+                self.times.push(Instant::now());
+
+                if self.times.len() == 10 {               
+                    let frame_duration = (self.times[9] - self.times[0]) / 10;
+                    println!("Framerate: {}", 0.016666 / frame_duration.as_secs_f64());
+                }
+            }
 
             //println!("and ending PPU position {}, {}", self.ppu.borrow().pixel(), self.ppu.borrow().scanline());
 
@@ -316,7 +331,7 @@ impl Context {
             // TODO: ???????????????????
 
             let do_if = {
-                let ppu = self.inner.ppu.as_mut().unwrap();
+                let ppu = &mut self.inner.ppu;
                 !(ppu.pixel() == 2 && ppu.scanline() == 241) && ppu.nmi_falling()
             };
 
@@ -328,11 +343,7 @@ impl Context {
                 apu.next(7, &mut self.inner, &mut self.cpu);
                 self.inner.apu.replace(apu);
 
-                let mut ppu = self.inner.ppu.take().unwrap();
-                let ppu_mapper = self.inner.ppu_mapper.take().unwrap();
-                ppu.next(7, &mut *ppu_mapper.borrow_mut(), &mut SdlDisplay { sdl_system: &mut self.sdl_system.borrow_mut(), surface: &mut self.surface }, &mut self.cpu, &mut self.inner);
-                self.inner.ppu_mapper.replace(ppu_mapper);
-                self.inner.ppu.replace(ppu);
+                self.inner.ppu.next(7, &mut *self.inner.ppu_mapper.borrow_mut(), &mut SdlDisplay { sdl_system: &mut self.sdl_system.borrow_mut(), surface: &mut self.surface });
             }
         }
 
