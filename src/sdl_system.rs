@@ -1,6 +1,6 @@
 use crate::APUAudio;
 use sdl2::audio::AudioDevice;
-use sdl2::render::WindowCanvas;
+use sdl2::video::Window;
 use sdl2::{AudioSubsystem, EventPump, Sdl, VideoSubsystem};
 
 pub struct SDLSystem {
@@ -8,7 +8,7 @@ pub struct SDLSystem {
     pub video_subsystem: VideoSubsystem,
     pub audio_subsystem: AudioSubsystem,
     pub audio_device: Option<AudioDevice<APUAudio>>,
-    pub canvas: WindowCanvas,
+    pub window: Window,
     pub event_pump: EventPump,
 }
 
@@ -22,24 +22,15 @@ impl SDLSystem {
             .position_centered()
             .build()
             .unwrap();
-        let canvas = window.into_canvas().build().unwrap();
         let event_pump = ctx.event_pump().unwrap();
         SDLSystem {
             ctx,
             video_subsystem,
             audio_subsystem,
-            canvas,
+            window,
             event_pump,
             audio_device: None,
         }
-    }
-
-    pub fn present(&mut self) {
-        self.canvas.present();
-    }
-
-    pub fn canvas(&mut self) -> &mut WindowCanvas {
-        &mut self.canvas
     }
 }
 

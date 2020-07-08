@@ -12,13 +12,13 @@ use sdl2::event::Event;
 use sdl2::keyboard::Keycode;
 use sdl2::surface::Surface;
 use sdl2::render::Canvas;
-use sdl2::rect::Rect;
 use std::time::Instant;
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::io::Write;
 use std::rc::Rc;
 use std::convert::TryFrom;
+use pixels::Pixels;
 
 macro_rules! getter_body {
     ($self:expr, $addr:expr, $mapperfunc:ident, $func:ident, $($arg:expr)?) => {
@@ -70,8 +70,9 @@ macro_rules! getter_body {
 
 
 pub struct SdlDisplay<'a> {
-    sdl_system: &'a mut SDLSystem,
-    surface: &'a mut Canvas<Surface<'static>>,
+    //sdl_system: &'a mut SDLSystem,
+    //surface: &'a mut Canvas<Surface<'static>>,
+    pixels: &'a mut Pixels,
 }
 
 impl Display for SdlDisplay<'_> {
@@ -96,21 +97,40 @@ impl Display for SdlDisplay<'_> {
         pixels[y * pitch + x * 4 + 1] = rgb.1;
         pixels[y * pitch + x * 4 + 2] = rgb.2;*/
 
-        self.surface.surface_mut().fill_rect(Rect::new(x, y, 1, 1), rgb.into()).unwrap();
+        //self.surface.surface_mut().fill_rect(Rect::new(x, y, 1, 1), rgb.into()).unwrap();
+
+        let x = if 0 <= x && (x as u32) < 1024 {
+            x as usize
+        } else {
+            return
+        };
+
+        let y = if 0 <= y && (y as u32) < 512 {
+            y as usize
+        } else {
+            return
+        };
+
+        let pixels = &mut self.pixels.get_frame()[(y * 1024 + x) * 4..][..4];
+
+        pixels[0] = rgb.0;
+        pixels[1] = rgb.1;
+        pixels[2] = rgb.2;
     }
 
     fn draw_rect(&mut self, x: i32, y: i32, w: u32, h: u32, rgb: (u8, u8, u8)) {
-        self.surface.set_draw_color(rgb);
-        self.surface.draw_rect(sdl2::rect::Rect::new(x, y, w, h)).unwrap();
+        for x in x..=x + w as i32 {
+            self.set_pixel(x, y, rgb);
+            self.set_pixel(x, y + h as i32, rgb);
+        }
+        for y in y..=y + h as i32 {
+            self.set_pixel(x, y, rgb);
+            self.set_pixel(x + w as i32, y, rgb);
+        }
     }
     
     fn commit(&mut self) {
-        let creator = self.sdl_system.canvas.texture_creator();
-        let texture = creator.create_texture_from_surface(self.surface.surface()).unwrap();
-        let w = texture.query().width;
-        let h = texture.query().height;
-        self.sdl_system.canvas.copy(&texture, None, sdl2::rect::Rect::new(0, 0, w, h)).unwrap();
-        self.sdl_system.present();
+        self.pixels.render().unwrap();
     }
 }
 
@@ -138,6 +158,7 @@ pub struct Context {
     pub inner: CpuContext,
     pub hit_breakpoint: bool,
     pub sdl_system: RefCell<SDLSystem>,
+    pub pixels: Pixels,
     pub surface: Canvas<Surface<'static>>,
     controller_poll_timer: usize,
     pub prev_ppu_frame: usize,
@@ -214,10 +235,13 @@ impl Context {
 
         sdl_system.audio_device.as_ref().unwrap().resume();
 
+        let pixels = Pixels::new(1024, 512, pixels::SurfaceTexture::new(1024, 512, pixels::wgpu::Surface::create(&sdl_system.window))).unwrap();
+
         Context {
             hit_breakpoint: false,
             cpu: CPU::new(),
             sdl_system: RefCell::new(sdl_system),
+            pixels,
             surface: Surface::new(1024, 512, sdl2::pixels::PixelFormatEnum::RGBA32).unwrap().into_canvas().unwrap(),
             inner: CpuContext {
                 ppu: PPU::new(),
@@ -305,11 +329,11 @@ impl Context {
             apu.next(cycles as usize, &mut self.inner, &mut self.cpu);
             self.inner.apu.replace(apu);
 
-            self.inner.ppu.next(cycles as usize, &mut *self.inner.ppu_mapper.borrow_mut(), &mut SdlDisplay { sdl_system: &mut self.sdl_system.borrow_mut(), surface: &mut self.surface });
+            self.inner.ppu.next(cycles as usize, &mut *self.inner.ppu_mapper.borrow_mut(), &mut SdlDisplay { pixels: &mut self.pixels, });
 
             if self.inner.ppu.frame() != self.prev_ppu_frame {
                 self.prev_ppu_frame = self.inner.ppu.frame();
-                self.inner.ppu.debug_render(&mut *self.inner.ppu_mapper.borrow_mut(), &mut SdlDisplay { sdl_system: &mut self.sdl_system.borrow_mut(), surface: &mut self.surface });
+                self.inner.ppu.debug_render(&mut *self.inner.ppu_mapper.borrow_mut(), &mut SdlDisplay { pixels: &mut self.pixels });
 
                 if self.times.len() == 10 {
                     self.times.remove(0);
@@ -343,7 +367,7 @@ impl Context {
                 apu.next(7, &mut self.inner, &mut self.cpu);
                 self.inner.apu.replace(apu);
 
-                self.inner.ppu.next(7, &mut *self.inner.ppu_mapper.borrow_mut(), &mut SdlDisplay { sdl_system: &mut self.sdl_system.borrow_mut(), surface: &mut self.surface });
+                self.inner.ppu.next(7, &mut *self.inner.ppu_mapper.borrow_mut(), &mut SdlDisplay { pixels: &mut self.pixels });
             }
         }
 
